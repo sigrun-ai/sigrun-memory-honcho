@@ -132,6 +132,11 @@ export class HonchoClient {
 		return this.peer(this.#settings.agentPeerId);
 	}
 
+	/** Get-or-create a session by id (the SDK performs the HTTP call on first use). */
+	session(id: string): Promise<Session> {
+		return this.#client.session(id);
+	}
+
 	/**
 	 * Wait for every live chain to settle, giving up after `deadlineMs`.
 	 * The drain hook `harnessShutdown` awaits.

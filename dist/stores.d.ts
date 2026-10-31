@@ -35,6 +35,7 @@ export declare class ExtensionStores {
      * Run `work` holding the outbox mutex. The caller's promise settles with
      * the work's own result (rejection included); the internal tail is
      * self-catching so one failing caller cannot poison the queue.
+     * NOT re-entrant: do not call `withOutbox` from within `work`.
      */
     withOutbox<T>(work: () => Promise<T>): Promise<T>;
     readLedger(conversationId: number): Promise<Ledger | undefined>;

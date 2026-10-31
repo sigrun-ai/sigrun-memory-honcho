@@ -49,6 +49,8 @@ export declare class HonchoClient {
     userPeerFor(owner: string | undefined): Promise<Peer>;
     /** The agent's own peer (settings.agentPeerId). */
     agentPeer(): Promise<Peer>;
+    /** Get-or-create a session by id (the SDK performs the HTTP call on first use). */
+    session(id: string): Promise<Session>;
     /**
      * Wait for every live chain to settle, giving up after `deadlineMs`.
      * The drain hook `harnessShutdown` awaits.
