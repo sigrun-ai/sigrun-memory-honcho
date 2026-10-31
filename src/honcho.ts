@@ -100,12 +100,16 @@ export class HonchoClient {
 		return this.#sdk;
 	}
 
-	/** Get-or-create a peer by id, memoized. */
+	/** Get-or-create a peer by id, memoized (rejections are NOT memoized: a
+	 *  transient failure must not stick — the outbox retry story depends on it). */
 	peer(id: string): Promise<Peer> {
 		const existing = this.#peers.get(id);
 		if (existing !== undefined) return existing;
 		const created = this.#client.peer(id);
 		this.#peers.set(id, created);
+		created.catch(() => {
+			if (this.#peers.get(id) === created) this.#peers.delete(id);
+		});
 		return created;
 	}
 

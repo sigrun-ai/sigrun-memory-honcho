@@ -233,6 +233,26 @@ describe("HonchoClient", () => {
 		expect(calls).toEqual([{ kind: "peer", id: "user" }]);
 	});
 
+	it("does NOT memoize a peer rejection: the next call retries the SDK", async () => {
+		let attempts = 0;
+		const sdk: HonchoSdk = {
+			async peer(id: string) {
+				attempts++;
+				if (attempts === 1) throw new Error("synthetic transient failure");
+				return { id } as unknown as Peer;
+			},
+			async session(id: string) {
+				return { id } as unknown as Session;
+			},
+		};
+		const client = new HonchoClient(SETTINGS, "synthetic-key", () => sdk);
+		await expect(client.userPeerFor(undefined)).rejects.toThrow(
+			"synthetic transient failure",
+		);
+		await expect(client.userPeerFor(undefined)).resolves.toEqual({ id: "user" });
+		expect(attempts).toBe(2);
+	});
+
 	it("agentPeer() asks the SDK for the configured agentPeerId", async () => {
 		const { sdk, calls } = fakeSdk();
 		const client = new HonchoClient(SETTINGS, "synthetic-key", () => sdk);

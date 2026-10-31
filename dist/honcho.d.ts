@@ -40,7 +40,8 @@ export declare class ConversationClient {
 export declare class HonchoClient {
     #private;
     constructor(settings: HonchoSettings, apiKey: string | undefined, createSdk?: CreateSdk);
-    /** Get-or-create a peer by id, memoized. */
+    /** Get-or-create a peer by id, memoized (rejections are NOT memoized: a
+     *  transient failure must not stick — the outbox retry story depends on it). */
     peer(id: string): Promise<Peer>;
     /** The per-conversation client, memoized. */
     for(conversationId: string): ConversationClient;
