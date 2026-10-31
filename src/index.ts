@@ -36,7 +36,7 @@ import {
 import { DeliveryEngine } from "./delivery.js";
 import { HonchoClient } from "./honcho.js";
 import { ExtensionStores, type StorePaths } from "./stores.js";
-import { createSweepTask } from "./sweep.js";
+import { createSweepTask, SWEEP_TASK_NAME } from "./sweep.js";
 import type { RunSettledEventLike } from "./types.js";
 
 /** This extension's registry name AND its selection-gate sentinel. */
@@ -301,7 +301,7 @@ export function createHonchoMemory(
 			{
 				name: "outbox-sweep",
 				schedule: { cron: "*/15 * * * *" },
-				action: { kind: "task", task: "honcho-outbox-sweep" },
+				action: { kind: "task", task: SWEEP_TASK_NAME },
 			},
 		],
 

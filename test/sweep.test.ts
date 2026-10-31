@@ -54,14 +54,17 @@ async function makeHarness(options?: {
 	const settings: HonchoSettings = { ...SETTINGS, ...options?.settings };
 	const stores = new ExtensionStores(paths, settings);
 	const calls: EngineCall[] = [];
+	const overrides = options?.engine ?? {};
 	const engine = {
 		establish: async (conversationId: number, owner: string) => {
-			calls.push({ kind: "establish", conversationId, owner });
+			calls.push({ kind: "establish" as const, conversationId, owner });
+			if (overrides.establish !== undefined) {
+				await overrides.establish(conversationId, owner);
+			}
 		},
-		...options?.engine,
 		deliverPending: async (conversationId: number, owner: string) => {
-			calls.push({ kind: "deliverPending", conversationId, owner });
-			await options?.engine?.deliverPending?.(conversationId, owner);
+			calls.push({ kind: "deliverPending" as const, conversationId, owner });
+			await overrides.deliverPending?.(conversationId, owner);
 		},
 	} as unknown as DeliveryEngine;
 	const deps: SweepTaskDeps = {
@@ -233,7 +236,11 @@ describe("createSweepTask", () => {
 
 		// File order = the order the conversations FIRST appear, records of the
 		// same conversation travel with their conversation's one delivery call.
+		// EVERY planned conversation is established first (idempotent; the
+		// ledger-less recovery lane needs it), forks ahead of the rest.
 		expect(harness.calls).toEqual([
+			{ kind: "establish", conversationId: 1, owner: "alice" },
+			{ kind: "establish", conversationId: 2, owner: "alice" },
 			{ kind: "deliverPending", conversationId: 1, owner: "alice" },
 			{ kind: "deliverPending", conversationId: 2, owner: "alice" },
 		]);
@@ -288,6 +295,8 @@ describe("createSweepTask", () => {
 		await runSweep(harness.task);
 
 		expect(harness.calls.map((call) => call.kind)).toEqual([
+			"establish",
+			"establish",
 			"deliverPending",
 			"deliverPending",
 		]);
@@ -348,7 +357,7 @@ describe("createSweepTask", () => {
 		]);
 	});
 
-	it("does not revisit an already-resolved pending fork", async () => {
+	it("does not revisit an already-resolved pending fork for a second establish pass", async () => {
 		const harness = tracked(await makeHarness());
 		await harness.stores.writePendingFork({
 			...fork(9, 3),
@@ -361,8 +370,103 @@ describe("createSweepTask", () => {
 
 		await runSweep(harness.task);
 
+		// No dedicated fork-establish pass (resolvedAt is stamped); the uniform
+		// per-conversation establish covers it exactly once.
 		expect(harness.calls).toEqual([
+			{ kind: "establish", conversationId: 9, owner: "alice" },
 			{ kind: "deliverPending", conversationId: 9, owner: "alice" },
 		]);
+	});
+
+	it("drops a pending record already in the ledger's delivered window, silently", async () => {
+		const harness = tracked(await makeHarness());
+		// Skipped-but-lingering: the batch was sent (ledger flipped) but the
+		// record never flipped to delivered (the accepted crash window).
+		const lingering = pendingRecord(7);
+		await harness.stores.writeLedger(7, ledger(7, [lingering.batchId]));
+		const healthy = pendingRecord(8);
+		await harness.stores.writeLedger(8, ledger(8));
+		await harness.stores.withOutbox(async () => {
+			await harness.stores.appendOutboxRecord(lingering);
+			await harness.stores.appendOutboxRecord(healthy);
+		});
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		await runSweep(harness.task);
+
+		expect(await harness.stores.readOutbox()).toEqual([healthy]);
+		// Silent drop: the ledger already counts the batch — housekeeping,
+		// not data loss, so NO retention-style warning.
+		expect(warn).not.toHaveBeenCalled();
+	});
+
+	it("recovers a ledger-less conversation end-to-end (the missing-key capture lane)", async () => {
+		const harness = tracked(await makeHarness());
+		// No ledger for conversation 5: the capture wrote the outbox record but
+		// no key existed, so no session was ever established.
+		const record = pendingRecord(5);
+		await harness.stores.withOutbox(async () => {
+			await harness.stores.appendOutboxRecord(record);
+		});
+
+		await runSweep(harness.task);
+
+		// The sweep establishes (the fake engine records it), delivers, and
+		// does NOT fault — compaction still runs (the record stays pending
+		// because the fake engine sends nothing, but nothing was dropped and
+		// the phase committed terminal).
+		expect(harness.calls).toEqual([
+			{ kind: "establish", conversationId: 5, owner: "alice" },
+			{ kind: "deliverPending", conversationId: 5, owner: "alice" },
+		]);
+	});
+
+	it("a rejecting conversation never blocks the rest of the sweep or compaction", async () => {
+		// Conversation 1's establish rejects; the recorded default covers the
+		// rest (the harness composes overrides with its recording wrapper).
+		const harness = tracked(
+			await makeHarness({
+				engine: {
+					establish: async (conversationId: number) => {
+						if (conversationId === 1) {
+							throw new Error("session not established");
+						}
+					},
+				},
+			}),
+		);
+		const poisoned = pendingRecord(1);
+		const delivered = pendingRecord(2, { status: "delivered" });
+		const healthy = pendingRecord(3);
+		await harness.stores.writeLedger(1, ledger(1));
+		await harness.stores.writeLedger(2, ledger(2));
+		await harness.stores.writeLedger(3, ledger(3));
+		await harness.stores.withOutbox(async () => {
+			await harness.stores.appendOutboxRecord(poisoned);
+			await harness.stores.appendOutboxRecord(delivered);
+			await harness.stores.appendOutboxRecord(healthy);
+		});
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		// Must NOT reject: one poisoned conversation cannot fault the task.
+		const commits = await runSweep(harness.task);
+
+		// Conversation 1's establish threw; 2 and 3 still establish + deliver,
+		// and the sweep neither faults nor skips compaction. (The harness
+		// records calls BEFORE the override runs, so the poisoned
+		// conversation's deliverPending records but no-ops.)
+		expect(harness.calls).toEqual([
+			{ kind: "establish", conversationId: 1, owner: "alice" },
+			{ kind: "establish", conversationId: 2, owner: "alice" },
+			{ kind: "establish", conversationId: 3, owner: "alice" },
+			{ kind: "deliverPending", conversationId: 1, owner: "alice" },
+			{ kind: "deliverPending", conversationId: 2, owner: "alice" },
+			{ kind: "deliverPending", conversationId: 3, owner: "alice" },
+		]);
+		expect(error).toHaveBeenCalled();
+		// Compaction still ran: the pre-delivered record is gone.
+		expect(await harness.stores.readOutbox()).toEqual([poisoned, healthy]);
+		// And the phase still committed terminal.
+		expect(commits).toHaveLength(1);
 	});
 });
