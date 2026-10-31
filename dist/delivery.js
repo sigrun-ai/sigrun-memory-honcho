@@ -117,6 +117,13 @@ export class DeliveryEngine {
      * (unanswered and user-only batches fold no anchor).
      */
     async deliverPending(conversationId, owner) {
+        // Whether this pass flipped at least one batch. Read AFTER the chain
+        // settles: the `onDelivered` hook runs OUT of the chain callback —
+        // hook implementations (the factory's leading-edge refresh) re-enter
+        // `chain("conversation:<id>")` on this same label, so calling the
+        // hook inside the callback is a circular wait (the outer run awaits
+        // the hook, which queues behind the tail the outer run must settle).
+        let delivered = false;
         await this.#client.for(String(conversationId)).chain(async () => {
             const conversation = this.#client.for(String(conversationId));
             // Establish on miss: a rebuilt client (key/settings change) loses
@@ -179,9 +186,14 @@ export class DeliveryEngine {
                     ? { ...record, status: "delivered" }
                     : record);
                 await this.#stores.rewriteOutbox(rewritten);
-                await this.#hooks.onDelivered?.(conversationId);
+                delivered = true;
             });
         });
+        // Out of the chain (see the declaration above): the hook's own work
+        // (a representation refresh) chains behind the delivery that just
+        // settled, never behind itself.
+        if (delivered)
+            await this.#hooks.onDelivered?.(conversationId);
     }
     /**
      * Fire-and-forget delivery (the capture path's posture): self-catching,

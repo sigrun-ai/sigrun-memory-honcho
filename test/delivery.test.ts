@@ -16,7 +16,6 @@ import { HonchoClient, type HonchoSdk } from "../src/honcho.js";
 import createHonchoMemory from "../src/index.js";
 import { ExtensionStores, type StorePaths } from "../src/stores.js";
 import type {
-	Ledger,
 	OutboxEntry,
 	OutboxRecord,
 	RunSettledEventLike,
@@ -50,6 +49,7 @@ interface FakeHarness {
 	calls: SdkCall[];
 	sessions: Map<string, FakeSession>;
 	fresh: (id: string) => FakeSession;
+	contextResult: (options: unknown) => unknown;
 }
 
 class FakePeer {
@@ -88,6 +88,10 @@ class FakeSession {
 		});
 	}
 
+	async context(options: unknown) {
+		return this.#harness.contextResult(options);
+	}
+
 	async clone(messageId?: string): Promise<Session> {
 		this.#harness.calls.push({
 			kind: "clone",
@@ -123,6 +127,10 @@ const fakeSdk = (): FakeHarness => {
 	const harness: FakeHarness = {
 		calls,
 		sessions,
+		contextResult: () => ({
+			peerRepresentation: "rep",
+			summary: { content: "sum" },
+		}),
 		fresh(id: string): FakeSession {
 			const existing = sessions.get(id);
 			if (existing !== undefined) return existing;
@@ -573,6 +581,54 @@ describe("deliverPending", () => {
 		// Second pass over an already-delivered batch: no flip, no second hook.
 		await engine.deliverPending(7, "alice");
 		expect(delivered).toEqual([7]);
+	});
+
+	it("real composition: first delivery with a chain-entering hook never deadlocks the conversation chain", async () => {
+		// The regression guard for the leading-edge deadlock: the factory's
+		// onDelivered calls refreshRepresentation, which re-enters
+		// chain("conversation:<id>") on the same label. Called INSIDE
+		// deliverPending's chain callback, that is a circular wait; the hook
+		// must run OUT of the chain and queue behind the settled tail.
+		// Real engine + the real factory hook wiring (verbatim) + fake SDK +
+		// the REAL refresh (only `context` stubbed on the fake session).
+		const harness = fakeSdk();
+		const { stores } = await makeStores();
+		const client = new HonchoClient(SETTINGS, "synthetic-key", () => harness.sdk);
+		const { refreshRepresentation } = await import("../src/representations.js");
+		const engine = new DeliveryEngine(client, stores, SETTINGS, {
+			onDelivered: async (conversationId: number) => {
+				if (stores.readRepresentationSync(conversationId) !== undefined) return;
+				const ledger = stores.readLedgerSync(conversationId);
+				if (ledger === undefined) return;
+				await refreshRepresentation(
+					client,
+					stores,
+					SETTINGS,
+					conversationId,
+					ledger.ownerAtFirstCapture,
+				);
+			},
+		});
+
+		await engine.establish(7, "alice");
+		await stores.withOutbox(() => stores.appendOutboxRecord(record("b-first")));
+
+		// The deadlock signature: this never resolves. The bounded race turns
+		// a hang into a fast test failure rather than a suite stall.
+		await Promise.race([
+			engine.deliverPending(7, "alice"),
+			new Promise<never>((_resolve, reject) => {
+				setTimeout(() => reject(new Error("deliverPending deadlocked")), 5_000);
+			}),
+		]);
+
+		// The leading-edge refresh landed afterward: the cache file carries
+		// the SDK-field mapping (peerRepresentation → userProfile).
+		expect(stores.readRepresentationSync(7)).toEqual({
+			userProfile: "rep",
+			projectSummary: "sum",
+			fetchedAt: expect.any(Number),
+		});
 	});
 
 	it("leading edge: absent cache at delivery triggers one refresh", async () => {

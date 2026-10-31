@@ -131,6 +131,12 @@ export function createHonchoMemory(
 	// arrive after boot).
 	let engineKey: string | undefined;
 	let engineSettings: HonchoSettings | undefined;
+	// The client the cached engine was built with. Session marks live on
+	// THIS instance (establishment marks its ConversationClients), so the
+	// worker's refresh gate (`hasSession`) is only meaningful through it —
+	// a per-run fresh client would always gate false and the idle-wake
+	// refresh would never fire (Task-8 review finding 2).
+	let engineClient: HonchoClient | undefined;
 
 	function makeClient(
 		settings: HonchoSettings,
@@ -176,13 +182,14 @@ export function createHonchoMemory(
 		}
 		const building = (async () => {
 			const client = makeClient(settings, apiKey);
+			engineClient = client;
 			// The leading-edge hook: a delivered conversation whose
 			// representation cache is ABSENT refreshes once (a present cache
 			// is fresh enough — the idle worker owns re-refreshes). The
-			// refresh runs inside the conversation's chain (it chains
-			// itself), behind the delivery work the hook is called from.
-			// Failures log and are swallowed: a failed refresh must never
-			// fault the delivery it rode in on.
+			// delivery engine calls the hook OUT of the conversation chain,
+			// so this refresh chains behind the delivery that just settled
+			// (never a circular wait). Failures log and are swallowed: a
+			// failed refresh must never fault the delivery it rode in on.
 			const hooks: DeliveryHooks = {
 				onDelivered: async (conversationId) => {
 					const store = await stores();
@@ -222,6 +229,7 @@ export function createHonchoMemory(
 				enginePromise = undefined;
 				engineKey = undefined;
 				engineSettings = undefined;
+				engineClient = undefined;
 			}
 		});
 		return building;
@@ -358,14 +366,21 @@ export function createHonchoMemory(
 								const conversationId = Number(wake.conversationId);
 								const ledger = store.readLedgerSync(conversationId);
 								if (ledger !== undefined) {
-									// A conversation without an established session
-									// (never delivered — e.g. idle before the first
-									// capture) has nothing to snapshot; skip quietly.
-									const client = makeClient(engineSettings, engineKey);
-									const conversation = client.for(String(conversationId));
+									// Refresh through the ENGINE's client: session
+									// marks live there (a fresh client would always
+									// gate false). A conversation without an
+									// established session (never delivered — e.g.
+									// idle before the first capture) has nothing to
+									// snapshot; skip quietly. `engineClient` is set
+									// alongside the engine the `instanceof` check
+									// just confirmed.
+									if (engineClient === undefined) return;
+									const conversation = engineClient.for(
+										String(conversationId),
+									);
 									if (conversation.hasSession()) {
 										await refreshRepresentation(
-											client,
+											engineClient,
 											store,
 											engineSettings,
 											conversationId,

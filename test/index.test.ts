@@ -620,17 +620,18 @@ describe("createHonchoMemory", () => {
 		harness = await makeHarness({ apiKey: "sk-test" });
 		// No engine seam: the default construction makes the refresh eligible
 		// (a custom createEngine skips it — production uses the real engine).
-		// A stubbed CLIENT: the conversation's session is pre-established (the
-		// refresh's gate) and there is no network surface.
+		// A stubbed MEMOIZED client: the factory hands the engine AND the
+		// worker the same instance, so the pre-established session mark is
+		// visible to the worker's refresh gate (production parity).
 		const { ConversationClient } = await import("../src/honcho.js");
 		const conversation = new ConversationClient("7");
 		conversation.markEstablished(Promise.resolve({} as never));
+		const stubClient = {
+			for: () => conversation,
+			drainAll: async () => {},
+		};
 		const result = createHonchoMemory(harness.host as never, {
-			createClient: () =>
-				({
-					for: () => conversation,
-					drainAll: async () => {},
-				}) as never,
+			createClient: () => stubClient as never,
 		});
 		const { ExtensionStores } = await import("../src/stores.js");
 		const stores = new ExtensionStores(harness.host.stores.paths, SETTINGS);
@@ -642,9 +643,9 @@ describe("createHonchoMemory", () => {
 			anchors: [],
 		});
 
-		// Full-stub the refresh itself: the unit under test is the WORKER's
-		// wiring (which conversation, which owner) — refreshRepresentation's
-		// own behavior is covered in test/representations.test.ts.
+		// The refresh must flow through the factory's memoized ENGINE client
+		// (where session marks live) — a per-run fresh client always gates
+		// false and the refresh never fires in production.
 		const refresh = vi
 			.mocked(refreshRepresentation)
 			.mockImplementation(async () => {});
@@ -655,6 +656,7 @@ describe("createHonchoMemory", () => {
 		} as never);
 
 		expect(refresh).toHaveBeenCalledTimes(1);
+		expect(refresh.mock.calls[0]?.[0]).toBe(stubClient);
 		expect(refresh.mock.calls[0]?.[3]).toBe(7);
 		expect(refresh.mock.calls[0]?.[4]).toBe("alice");
 		expect(result.workerStatus?.get("honcho-representations")?.runs).toBe(1);
