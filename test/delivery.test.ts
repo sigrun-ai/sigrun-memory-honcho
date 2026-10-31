@@ -13,8 +13,14 @@ import type {
 import type { HonchoSettings } from "../src/config.js";
 import { DeliveryEngine } from "../src/delivery.js";
 import { HonchoClient, type HonchoSdk } from "../src/honcho.js";
-import { ExtensionStores } from "../src/stores.js";
-import type { Ledger, OutboxEntry, OutboxRecord } from "../src/types.js";
+import createHonchoMemory from "../src/index.js";
+import { ExtensionStores, type StorePaths } from "../src/stores.js";
+import type {
+	Ledger,
+	OutboxEntry,
+	OutboxRecord,
+	RunSettledEventLike,
+} from "../src/types.js";
 
 const SETTINGS: HonchoSettings = {
 	agentPeerId: "test-agent",
@@ -145,6 +151,7 @@ const fakeSdk = (): FakeHarness => {
 
 interface Root {
 	dir: string;
+	paths: StorePaths;
 	stores: ExtensionStores;
 }
 
@@ -152,12 +159,15 @@ const roots: Root[] = [];
 
 async function makeStores(): Promise<Root> {
 	const dir = await mkdtemp(join(tmpdir(), "memory-honcho-delivery-test-"));
+	const paths: StorePaths = {
+		data: join(dir, "data"),
+		state: join(dir, "state"),
+		cache: join(dir, "cache"),
+	};
 	const root: Root = {
 		dir,
-		stores: new ExtensionStores(
-			{ data: join(dir, "data"), state: join(dir, "state"), cache: join(dir, "cache") },
-			SETTINGS,
-		),
+		paths,
+		stores: new ExtensionStores(paths, SETTINGS),
 	};
 	roots.push(root);
 	return root;
@@ -571,16 +581,21 @@ describe("deliverPending", () => {
 // -- kick ---------------------------------------------------------------------
 
 describe("kick", () => {
-	it("runs deliverPending fire-and-forget and logs on failure instead of rejecting", async () => {
+	it("establishes lazily inside the fire-and-forget attempt, and logs on failure instead of rejecting", async () => {
 		const harness = fakeSdk();
 		const { stores } = await makeStores();
-		const engine = makeEngine(harness, stores);
+		const client = new HonchoClient(SETTINGS, "synthetic-key", () => harness.sdk);
+		const engine = new DeliveryEngine(client, stores, SETTINGS);
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 		try {
-			// Never established: deliverPending rejects; kick swallows + logs.
+			// The SDK itself is down: the kick's lazy establishment rejects;
+			// kick swallows + logs (never rejects into the caller).
+			harness.sdk.session = async () => {
+				throw new Error("honcho down");
+			};
 			engine.kick(404, "alice");
-			// Give the fire-and-forget chain a chance to run.
-			for (let i = 0; i < 20; i++) await Promise.resolve();
+			await client.drainAll(5_000);
+			for (let i = 0; i < 10; i++) await Promise.resolve();
 			expect(
 				errorSpy.mock.calls.some((args) =>
 					args.some(
@@ -591,5 +606,228 @@ describe("kick", () => {
 		} finally {
 			errorSpy.mockRestore();
 		}
+	});
+});
+
+// -- end-to-end fork flow (Task 6: real Task-5 factory handlers + fake SDK) ----
+
+describe("end-to-end fork flow (real factory handlers)", () => {
+	function settledEvent(
+		conversationId: number,
+		inputs: number[],
+		inputTexts: string[],
+		answerEntryId: number,
+		answerText: string,
+	): RunSettledEventLike {
+		return {
+			conversationId,
+			owner: "alice",
+			inputs,
+			inputTexts,
+			outcome: {
+				status: "answered",
+				answerEntryId,
+				answer: { content: [{ type: "text", text: answerText }] },
+			},
+		};
+	}
+
+	// Selection gate: no AgentDoc → capture proceeds.
+	const EVENT_API = {
+		entry: async () => undefined,
+		entries: async () => ({ items: [], next: undefined }),
+		document: async () => undefined,
+	};
+	const CONTEXT = { abortSignal: undefined };
+
+	interface E2E {
+		harness: FakeHarness;
+		stores: ExtensionStores;
+		result: ReturnType<typeof createHonchoMemory>;
+		/** Await after runSettled: chain-serialized behind the kick, so when it
+		 *  resolves the fire-and-forget establish+deliver has completed. */
+		flush: (conversationId: number) => Promise<void>;
+	}
+
+	async function makeE2E(): Promise<E2E> {
+		const harness = fakeSdk();
+		const { paths, stores } = await makeStores();
+		const engineRef: { current?: DeliveryEngine } = {};
+		const host = {
+			stores: {
+				secrets: { get: async () => "sk-test" },
+				settings: { get: async () => ({}) },
+				paths,
+			},
+		};
+		const result = createHonchoMemory(host as never, {
+			// The default factory would construct the REAL network client —
+			// tests own their literals: inject the fake-SDK client.
+			createClient: (settings, apiKey) =>
+				new HonchoClient(settings, apiKey, () => harness.sdk),
+			createEngine: (client, engineStores, settings) => {
+				const engine = new DeliveryEngine(client, engineStores, settings);
+				engineRef.current = engine;
+				return engine;
+			},
+		});
+		return {
+			harness,
+			stores,
+			result,
+			flush: async (conversationId: number) => {
+				const engine = engineRef.current;
+				if (engine === undefined) throw new Error("engine not constructed");
+				await engine.deliverPending(conversationId, "alice");
+			},
+		};
+	}
+
+	it("full flow: parent capture → fork → child runSettled clones at the parent's anchor and delivers into the CLONED session", async () => {
+		const { harness, stores, result, flush } = await makeE2E();
+
+		// Parent captures + delivers: the anchor folds {43 → sigrun-7-msg-2}.
+		await result.runSettled?.(
+			settledEvent(7, [42], ["parent question"], 43, "parent answer") as never,
+			EVENT_API as never,
+			CONTEXT as never,
+		);
+		await flush(7);
+		expect((await stores.readLedger(7))?.anchors).toEqual([
+			{ entryId: 43, messageId: "sigrun-7-msg-2" },
+		]);
+
+		// The fork handler writes the pending record — zero network, no clone yet.
+		await result.conversationForked?.(
+			{ childId: 9, parentId: 7, at: 43 } as never,
+			EVENT_API as never,
+			CONTEXT as never,
+		);
+		expect(harness.calls.some((c) => c.kind === "clone")).toBe(false);
+
+		// The child's first settled run lazily establishes (the clone) and delivers.
+		await result.runSettled?.(
+			settledEvent(9, [50], ["child question"], 51, "child answer") as never,
+			EVENT_API as never,
+			CONTEXT as never,
+		);
+		await flush(9);
+
+		// The child session is the parent's clone at the fork anchor.
+		expect(harness.calls.filter((c) => c.kind === "clone")).toEqual([
+			{ kind: "clone", sessionId: "sigrun-7", messageId: "sigrun-7-msg-2" },
+		]);
+		const childLedger = await stores.readLedger(9);
+		expect(childLedger?.honchoSessionId).toBe("clone-of-sigrun-7");
+		expect(childLedger?.clonedFrom).toBe(7);
+		expect(childLedger?.anchors).toEqual([
+			{ entryId: 51, messageId: "clone-of-sigrun-7-msg-2" },
+		]);
+		expect((await stores.readPendingFork(9))?.resolvedAt).toEqual(
+			expect.any(Number),
+		);
+
+		// The child capture landed in the CLONED session — never a fresh sigrun-9.
+		expect(
+			harness.calls.find(
+				(c) => c.kind === "addMessages" && c.sessionId === "clone-of-sigrun-7",
+			),
+		).toMatchObject({
+			messages: [{ content: "child question" }, { content: "child answer" }],
+		});
+		expect(
+			harness.calls.some((c) => c.kind === "session" && c.id === "sigrun-9"),
+		).toBe(false);
+	});
+
+	it("no pending-fork, parent ledger exists: the child establishes fresh sigrun-<childId>, no inherit stamp, parent ledger untouched", async () => {
+		const { harness, stores, result, flush } = await makeE2E();
+		await result.runSettled?.(
+			settledEvent(7, [42], ["parent question"], 43, "parent answer") as never,
+			EVENT_API as never,
+			CONTEXT as never,
+		);
+		await flush(7);
+		const parentBefore = await stores.readLedger(7);
+
+		// The child settles with NO fork record (the fork predates the extension).
+		await result.runSettled?.(
+			settledEvent(9, [50], ["child question"], 51, "child answer") as never,
+			EVENT_API as never,
+			CONTEXT as never,
+		);
+		await flush(9);
+
+		expect(harness.calls.some((c) => c.kind === "clone")).toBe(false);
+		const childLedger = await stores.readLedger(9);
+		expect(childLedger?.honchoSessionId).toBe("sigrun-9");
+		expect(childLedger?.clonedFrom).toBeUndefined();
+		expect(childLedger?.inherit).toBeUndefined();
+		// The parent's ledger is byte-identical.
+		expect(await stores.readLedger(7)).toEqual(parentBefore);
+	});
+
+	it("trailing-input fork: parent anchors [(1,m1),(5,m5)], at=7 → clone(m5) (bounded under-inclusion)", async () => {
+		const { harness, stores, result, flush } = await makeE2E();
+		await result.runSettled?.(
+			settledEvent(7, [1], ["q1"], 1, "a1") as never,
+			EVENT_API as never,
+			CONTEXT as never,
+		);
+		await result.runSettled?.(
+			settledEvent(7, [5], ["q2"], 5, "a2") as never,
+			EVENT_API as never,
+			CONTEXT as never,
+		);
+		await flush(7);
+		expect((await stores.readLedger(7))?.anchors).toEqual([
+			{ entryId: 1, messageId: "sigrun-7-msg-2" },
+			{ entryId: 5, messageId: "sigrun-7-msg-4" },
+		]);
+
+		// The fork point sits between the newest anchor and the next answer.
+		await result.conversationForked?.(
+			{ childId: 9, parentId: 7, at: 7 } as never,
+			EVENT_API as never,
+			CONTEXT as never,
+		);
+		await result.runSettled?.(
+			settledEvent(9, [50], ["child question"], 51, "child answer") as never,
+			EVENT_API as never,
+			CONTEXT as never,
+		);
+		await flush(9);
+
+		expect(harness.calls.filter((c) => c.kind === "clone")).toEqual([
+			{ kind: "clone", sessionId: "sigrun-7", messageId: "sigrun-7-msg-4" },
+		]);
+		expect((await stores.readLedger(9))?.clonedFrom).toBe(7);
+	});
+
+	it("pending fork whose parent never captured: the record is RESOLVED (nothing to inherit), fresh child session, no inherit stamp", async () => {
+		const { harness, stores, result, flush } = await makeE2E();
+
+		// The fork handler ran, but the parent never captured (no parent ledger).
+		await result.conversationForked?.(
+			{ childId: 9, parentId: 71, at: 12 } as never,
+			EVENT_API as never,
+			CONTEXT as never,
+		);
+		await result.runSettled?.(
+			settledEvent(9, [50], ["child question"], 51, "child answer") as never,
+			EVENT_API as never,
+			CONTEXT as never,
+		);
+		await flush(9);
+
+		expect(harness.calls.some((c) => c.kind === "clone")).toBe(false);
+		const childLedger = await stores.readLedger(9);
+		expect(childLedger?.honchoSessionId).toBe("sigrun-9");
+		expect(childLedger?.clonedFrom).toBeUndefined();
+		expect(childLedger?.inherit).toBeUndefined();
+		// Resolved, not left to trip the sweeper's fork-first pass every sweep.
+		expect((await stores.readPendingFork(9))?.resolvedAt).toEqual(
+			expect.any(Number),
+		);
 	});
 });

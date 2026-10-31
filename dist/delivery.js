@@ -79,8 +79,12 @@ export class DeliveryEngine {
                     conversation.markEstablished(Promise.resolve(session));
                     return;
                 }
-                // No parent ledger entry (parent never captured): fall through to
-                // the plain get-or-create — nothing to inherit.
+                // No parent ledger entry (parent never captured): there is
+                // nothing to inherit, so the record can never become resolvable —
+                // resolve it now rather than leave it to trip the sweeper's
+                // fork-first pass every 15 minutes, then fall through to the
+                // plain get-or-create.
+                await this.#stores.resolvePendingFork(conversationId);
             }
             const session = await this.#getOrCreate(conversationId, owner);
             await this.#stores.writeLedger(conversationId, {
@@ -103,6 +107,16 @@ export class DeliveryEngine {
     async deliverPending(conversationId, owner) {
         await this.#client.for(String(conversationId)).chain(async () => {
             const conversation = this.#client.for(String(conversationId));
+            // Establish on miss: a rebuilt client (key/settings change) loses
+            // its in-memory session marks while the LEDGER survives — a re-read
+            // drives re-establishment (Task-5 review forward hazard). When the
+            // ledger is absent too the mark is already live (the kick chain
+            // established synchronously ahead), so this only ever re-marks.
+            const markMissing = await conversation.established().then(() => false, () => true);
+            if (markMissing &&
+                (await this.#stores.readLedger(conversationId)) !== undefined) {
+                await this.establish(conversationId, owner);
+            }
             const session = await conversation.established();
             const userPeer = await this.#client.userPeerFor(owner);
             const agentPeer = await this.#client.agentPeer();
@@ -153,10 +167,16 @@ export class DeliveryEngine {
     }
     /**
      * Fire-and-forget delivery (the capture path's posture): self-catching,
-     * logs rather than rejecting.
+     * logs rather than rejecting. Establishment is LAZY (spec §Capture: the
+     * capture path runs the establishment path inside the fire-and-forget
+     * attempt) — `establish` inside the attempt is chain-serialized ahead of
+     * the delivery, is a no-op when the conversation is already established,
+     * and re-marks a rebuilt client that lost its in-memory session promise.
      */
     kick(conversationId, owner) {
-        this.deliverPending(conversationId, owner).catch((error) => {
+        void this.establish(conversationId, owner)
+            .then(() => this.deliverPending(conversationId, owner))
+            .catch((error) => {
             console.error(`memory-honcho: delivery kick failed for conversation ${conversationId}`, error);
         });
     }

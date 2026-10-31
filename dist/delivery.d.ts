@@ -45,7 +45,11 @@ export declare class DeliveryEngine {
     deliverPending(conversationId: number, owner: string): Promise<void>;
     /**
      * Fire-and-forget delivery (the capture path's posture): self-catching,
-     * logs rather than rejecting.
+     * logs rather than rejecting. Establishment is LAZY (spec §Capture: the
+     * capture path runs the establishment path inside the fire-and-forget
+     * attempt) — `establish` inside the attempt is chain-serialized ahead of
+     * the delivery, is a no-op when the conversation is already established,
+     * and re-marks a rebuilt client that lost its in-memory session promise.
      */
     kick(conversationId: number, owner: string): void;
 }
