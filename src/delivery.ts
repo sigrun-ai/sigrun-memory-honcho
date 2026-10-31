@@ -280,21 +280,20 @@ export class DeliveryEngine {
 			});
 	}
 
-	/** Get-or-create `sigrun-<id>` with the map-form observe config. */
+	/** Get-or-create `sigrun-<id>` with the per-peer observe config. */
 	async #getOrCreate(conversationId: number, owner: string): Promise<Session> {
 		const session = await this.#client.session(`sigrun-${conversationId}`);
 		const userPeer = await this.#client.userPeerFor(owner);
 		const agentPeer = await this.#client.agentPeer();
-		// The SDK's map form carries the per-peer observation config (the
-		// array form carries none).
-		const peers = {
-			[userPeer.id]: { observeMe: true, observeOthers: true },
-			[agentPeer.id]: { observeMe: true, observeOthers: true },
-		};
-		// SAFETY: the runtime accepts the map form (the SDK docs and its own
-		// PeerAdditionToApiSchema zod union include it); only the declared
-		// PeerAddition type predates it.
-		await session.addPeers(peers as unknown as Parameters<Session["addPeers"]>[0]);
+		// The SDK's zod union (PeerAdditionSchema) does NOT accept the
+		// documented map form — only string | Peer | array | tuple. The
+		// tuple form [peerId, config] transforms to the API's per-peer
+		// observe config (verified live 2026-10-31 against honcho v3.0.9:
+		// tuple-array 200s, map form fails client-side validation).
+		await session.addPeers([
+			[userPeer.id, { observeMe: true, observeOthers: true }],
+			[agentPeer.id, { observeMe: true, observeOthers: true }],
+		]);
 		await session.setConfiguration(SESSION_CONFIGURATION);
 		return session;
 	}

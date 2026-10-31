@@ -228,7 +228,7 @@ function makeEngine(harness: FakeHarness, stores: ExtensionStores, hooks?: Const
 // -- establish -------------------------------------------------------------------
 
 describe("establish", () => {
-	it("unknown conversation: get-or-create sigrun-<id>, map-form addPeers, summary+dream config", async () => {
+	it("unknown conversation: get-or-create sigrun-<id>, tuple-form addPeers, summary+dream config", async () => {
 		const harness = fakeSdk();
 		const { stores } = await makeStores();
 		const engine = makeEngine(harness, stores);
@@ -239,13 +239,15 @@ describe("establish", () => {
 			harness.calls.filter((c) => c.kind === "session").map((c) => c.id),
 		).toEqual(["sigrun-7"]);
 		const addPeers = harness.calls.find((c) => c.kind === "addPeers");
+		// The SDK's zod union rejects the documented map form; the tuple
+		// form is the shape that reaches the wire (verified live 2026-10-31).
 		expect(addPeers).toMatchObject({
 			kind: "addPeers",
 			sessionId: "sigrun-7",
-			peers: {
-				alice: { observeMe: true, observeOthers: true },
-				"test-agent": { observeMe: true, observeOthers: true },
-			},
+			peers: [
+				["alice", { observeMe: true, observeOthers: true }],
+				["test-agent", { observeMe: true, observeOthers: true }],
+			],
 		});
 		expect(
 			harness.calls.find(
