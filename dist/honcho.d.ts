@@ -36,6 +36,12 @@ export declare class ConversationClient {
     established(): Promise<Session>;
     /** Internal: record the establish promise (used by Task 4). */
     markEstablished(session: Promise<Session>): void;
+    /**
+     * Whether a session promise has EVER been marked — distinguishes "no
+     * mark" from "mark present but rejected" (a failed get-or-create);
+     * `deliverPending`'s establish-on-miss treats both as missing.
+     */
+    hasSession(): boolean;
 }
 export declare class HonchoClient {
     #private;

@@ -63,7 +63,20 @@ export class DeliveryEngine {
 	 * ledger with a usable anchor. Idempotent (chain-serialized).
 	 */
 	establish(conversationId: number, owner: string): Promise<void> {
-		return this.#client.for(String(conversationId)).chain(async () => {
+		return this.#client
+			.for(String(conversationId))
+			.chain(() => this.#establishLocked(conversationId, owner));
+	}
+
+	/**
+	 * The establish body, WITHOUT chain acquisition — call it only from
+	 * inside the conversation's chain (`establish`, or `deliverPending`'s
+	 * establish-on-miss). Calling the public `establish` from inside the
+	 * chain re-enters `chain("conversation:<id>")` and deadlocks (the
+	 * inner run queues behind the outer one it awaits).
+	 */
+	async #establishLocked(conversationId: number, owner: string): Promise<void> {
+		{
 			const conversation = this.#client.for(String(conversationId));
 			const existing = await this.#stores.readLedger(conversationId);
 			if (existing?.honchoSessionId !== undefined) {
@@ -126,7 +139,7 @@ export class DeliveryEngine {
 				anchors: [],
 			});
 			conversation.markEstablished(Promise.resolve(session));
-		});
+		}
 	}
 
 	/**
@@ -141,18 +154,24 @@ export class DeliveryEngine {
 			const conversation = this.#client.for(String(conversationId));
 			// Establish on miss: a rebuilt client (key/settings change) loses
 			// its in-memory session marks while the LEDGER survives — a re-read
-			// drives re-establishment (Task-5 review forward hazard). When the
-			// ledger is absent too the mark is already live (the kick chain
-			// established synchronously ahead), so this only ever re-marks.
-			const markMissing = await conversation.established().then(
-				() => false,
-				() => true,
-			);
+			// drives re-establishment (Task-5 review forward hazard; the
+			// sweeper's normal path on a fresh process lands here too). A
+			// rejected mark (a failed get-or-create) is treated as missing.
+			// When the ledger is absent too, no caller established this
+			// conversation — keep the loud "not established" failure rather
+			// than silently creating a session. `#establishLocked` directly:
+			// we are INSIDE the chain; re-entering it would deadlock.
+			const marked = conversation.hasSession()
+				? await conversation.established().then(
+						() => true,
+						() => false,
+					)
+				: false;
 			if (
-				markMissing &&
+				!marked &&
 				(await this.#stores.readLedger(conversationId)) !== undefined
 			) {
-				await this.establish(conversationId, owner);
+				await this.#establishLocked(conversationId, owner);
 			}
 			const session = await conversation.established();
 			const userPeer = await this.#client.userPeerFor(owner);

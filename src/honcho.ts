@@ -75,6 +75,15 @@ export class ConversationClient {
 	markEstablished(session: Promise<Session>): void {
 		this.#sessionPromise = session;
 	}
+
+	/**
+	 * Whether a session promise has EVER been marked — distinguishes "no
+	 * mark" from "mark present but rejected" (a failed get-or-create);
+	 * `deliverPending`'s establish-on-miss treats both as missing.
+	 */
+	hasSession(): boolean {
+		return this.#sessionPromise !== undefined;
+	}
 }
 
 export class HonchoClient {

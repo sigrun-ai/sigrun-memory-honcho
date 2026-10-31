@@ -516,6 +516,41 @@ describe("deliverPending", () => {
 		expect((await stores.readLedger(7))?.deliveredBatchIds).toContain("b5");
 	});
 
+	it("rebuilt client (ledger survives, in-memory mark lost): deliverPending re-establishes and delivers — no hang, no throw", async () => {
+		const harness = fakeSdk();
+		const { stores } = await makeStores();
+		// The FIRST engine establishes and delivers (as the pre-restart process did).
+		const engine1 = makeEngine(harness, stores);
+		await engine1.establish(7, "alice");
+		await stores.withOutbox(() => stores.appendOutboxRecord(record("b-restart")));
+		await engine1.deliverPending(7, "alice");
+		expect((await stores.readLedger(7))?.deliveredBatchIds).toContain("b-restart");
+
+		// The rebuilt client: SAME stores (ledger survives), NO in-memory mark
+		// — the Task-5 review hazard, and the sweeper's normal path on a fresh
+		// process. deliverPending with NO prior establish must re-establish
+		// from the ledger and deliver (an establish-inside-the-chain would
+		// deadlock here and vitest's default timeout would fail the test).
+		const engine2 = new DeliveryEngine(
+			new HonchoClient(SETTINGS, "synthetic-key", () => harness.sdk),
+			stores,
+			SETTINGS,
+		);
+		await stores.withOutbox(() => stores.appendOutboxRecord(record("b-after")));
+		await engine2.deliverPending(7, "alice");
+
+		const sends = harness.calls.filter((c) => c.kind === "addMessages");
+		expect(sends).toHaveLength(2);
+		// Re-establishment resolved the ledger's session id — no get-or-create.
+		expect(harness.calls.filter((c) => c.kind === "session")).toEqual([
+			{ kind: "session", id: "sigrun-7" },
+			{ kind: "session", id: "sigrun-7" },
+		]);
+		const ledger = await stores.readLedger(7);
+		expect(ledger?.deliveredBatchIds).toContain("b-after");
+		expect((await stores.readOutbox()).every((r) => r.status === "delivered")).toBe(true);
+	});
+
 	it("hooks.onDelivered fires when a flip happened, not otherwise", async () => {
 		const harness = fakeSdk();
 		const { stores } = await makeStores();
@@ -644,9 +679,10 @@ describe("end-to-end fork flow (real factory handlers)", () => {
 		harness: FakeHarness;
 		stores: ExtensionStores;
 		result: ReturnType<typeof createHonchoMemory>;
-		/** Await after runSettled: chain-serialized behind the kick, so when it
-		 *  resolves the fire-and-forget establish+deliver has completed. */
-		flush: (conversationId: number) => Promise<void>;
+		client: HonchoClient;
+		/** Barrier after runSettled: drains every chain, so the fire-and-forget
+		 *  kick's own establish+deliver half has provably completed. */
+		flush: () => Promise<void>;
 	}
 
 	async function makeE2E(): Promise<E2E> {
@@ -660,13 +696,13 @@ describe("end-to-end fork flow (real factory handlers)", () => {
 				paths,
 			},
 		};
+		const client = new HonchoClient(SETTINGS, "sk-test", () => harness.sdk);
 		const result = createHonchoMemory(host as never, {
 			// The default factory would construct the REAL network client —
 			// tests own their literals: inject the fake-SDK client.
-			createClient: (settings, apiKey) =>
-				new HonchoClient(settings, apiKey, () => harness.sdk),
-			createEngine: (client, engineStores, settings) => {
-				const engine = new DeliveryEngine(client, engineStores, settings);
+			createClient: () => client,
+			createEngine: (engineClient, engineStores, settings) => {
+				const engine = new DeliveryEngine(engineClient, engineStores, settings);
 				engineRef.current = engine;
 				return engine;
 			},
@@ -675,10 +711,16 @@ describe("end-to-end fork flow (real factory handlers)", () => {
 			harness,
 			stores,
 			result,
-			flush: async (conversationId: number) => {
-				const engine = engineRef.current;
-				if (engine === undefined) throw new Error("engine not constructed");
-				await engine.deliverPending(conversationId, "alice");
+			client,
+			flush: async () => {
+				if (engineRef.current === undefined) {
+					throw new Error("engine not constructed");
+				}
+				// Barrier twice: the first drain can settle the kick's establish
+				// half before its delivery half has been QUEUED (a drain sees only
+				// tails live at call time); the second drain sees them all.
+				await client.drainAll(5_000);
+				await client.drainAll(5_000);
 			},
 		};
 	}
@@ -692,7 +734,7 @@ describe("end-to-end fork flow (real factory handlers)", () => {
 			EVENT_API as never,
 			CONTEXT as never,
 		);
-		await flush(7);
+		await flush();
 		expect((await stores.readLedger(7))?.anchors).toEqual([
 			{ entryId: 43, messageId: "sigrun-7-msg-2" },
 		]);
@@ -711,7 +753,7 @@ describe("end-to-end fork flow (real factory handlers)", () => {
 			EVENT_API as never,
 			CONTEXT as never,
 		);
-		await flush(9);
+		await flush();
 
 		// The child session is the parent's clone at the fork anchor.
 		expect(harness.calls.filter((c) => c.kind === "clone")).toEqual([
@@ -740,14 +782,14 @@ describe("end-to-end fork flow (real factory handlers)", () => {
 		).toBe(false);
 	});
 
-	it("no pending-fork, parent ledger exists: the child establishes fresh sigrun-<childId>, no inherit stamp, parent ledger untouched", async () => {
+	it("no pending-fork record → fresh session: child establishes fresh sigrun-<childId>, no inherit stamp, parent ledger untouched", async () => {
 		const { harness, stores, result, flush } = await makeE2E();
 		await result.runSettled?.(
 			settledEvent(7, [42], ["parent question"], 43, "parent answer") as never,
 			EVENT_API as never,
 			CONTEXT as never,
 		);
-		await flush(7);
+		await flush();
 		const parentBefore = await stores.readLedger(7);
 
 		// The child settles with NO fork record (the fork predates the extension).
@@ -756,7 +798,7 @@ describe("end-to-end fork flow (real factory handlers)", () => {
 			EVENT_API as never,
 			CONTEXT as never,
 		);
-		await flush(9);
+		await flush();
 
 		expect(harness.calls.some((c) => c.kind === "clone")).toBe(false);
 		const childLedger = await stores.readLedger(9);
@@ -779,7 +821,7 @@ describe("end-to-end fork flow (real factory handlers)", () => {
 			EVENT_API as never,
 			CONTEXT as never,
 		);
-		await flush(7);
+		await flush();
 		expect((await stores.readLedger(7))?.anchors).toEqual([
 			{ entryId: 1, messageId: "sigrun-7-msg-2" },
 			{ entryId: 5, messageId: "sigrun-7-msg-4" },
@@ -796,7 +838,7 @@ describe("end-to-end fork flow (real factory handlers)", () => {
 			EVENT_API as never,
 			CONTEXT as never,
 		);
-		await flush(9);
+		await flush();
 
 		expect(harness.calls.filter((c) => c.kind === "clone")).toEqual([
 			{ kind: "clone", sessionId: "sigrun-7", messageId: "sigrun-7-msg-4" },
@@ -818,7 +860,7 @@ describe("end-to-end fork flow (real factory handlers)", () => {
 			EVENT_API as never,
 			CONTEXT as never,
 		);
-		await flush(9);
+		await flush();
 
 		expect(harness.calls.some((c) => c.kind === "clone")).toBe(false);
 		const childLedger = await stores.readLedger(9);
