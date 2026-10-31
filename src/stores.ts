@@ -4,6 +4,9 @@
  * - `data/outbox/capture.jsonl` — the durable outbox (the only durable copy
  *   of not-yet-delivered conversation content, so it takes the backed-up
  *   bucket), one JSON record per line in append order.
+ * - `state/last-delivery.json` — the persistent newest-delivery marker the
+ *   status route reads (the sweeper drops delivered records, so the marker
+ *   is the only surviving source of `lastDeliveryAt` in steady state).
  * - `state/ledger/<conversationId>.json` — per-conversation bookkeeping
  *   (session mapping, delivered-batch window, fork anchors).
  * - `state/forks/pending/<childId>.json` — pending-fork records.
@@ -28,6 +31,7 @@ import { basename, dirname, join } from "node:path";
 
 import type { HonchoSettings } from "./config.js";
 import type {
+	LastDeliveryMarker,
 	Ledger,
 	OutboxRecord,
 	PendingForkRecord,
@@ -197,6 +201,23 @@ export class ExtensionStores {
 		await writeJsonAtomic(this.#representationPath(conversationId), snapshot);
 	}
 
+	// -- last-delivery marker (state) -------------------------------------------
+
+	/**
+	 * `state/last-delivery.json` — the persistent "newest delivery" marker.
+	 * The delivery engine writes it when it flips a record (inside the same
+	 * outbox critical section), because the sweeper drops delivered records
+	 * every 15 minutes — the status route's retained-records derivation dies
+	 * with them.
+	 */
+	async readLastDelivery(): Promise<LastDeliveryMarker | undefined> {
+		return readJson<LastDeliveryMarker>(this.#lastDeliveryPath());
+	}
+
+	async writeLastDelivery(marker: LastDeliveryMarker): Promise<void> {
+		await writeJsonAtomic(this.#lastDeliveryPath(), marker);
+	}
+
 	// -- paths ------------------------------------------------------------------
 
 	#ledgerPath(conversationId: number): string {
@@ -213,6 +234,10 @@ export class ExtensionStores {
 
 	#representationPath(conversationId: number): string {
 		return join(this.#paths.cache, "representations", `${conversationId}.json`);
+	}
+
+	#lastDeliveryPath(): string {
+		return join(this.#paths.state, "last-delivery.json");
 	}
 }
 

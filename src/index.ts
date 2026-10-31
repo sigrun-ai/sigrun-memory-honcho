@@ -9,11 +9,13 @@
  *
  * The factory composes Tasks 1-4: per-event it resolves settings and the
  * API key LIVE (a key written after boot applies at the next event), gates
- * capture on the conversation's extension selection (memoized per
- * conversation — the selection does not change mid-conversation), appends
- * the outbox record ALWAYS (a missing key skips only the kick; the sweeper
- * delivers later), and kicks fire-and-forget delivery. The engine is
- * constructed lazily on first use.
+ * capture on the conversation's extension selection (POSITIVE verdicts
+ * memoized per conversation — a cached `false` is re-read on the next
+ * event, so a mid-conversation opt-in captures; a mid-conversation
+ * array-form opt-out keeps capturing until restart, the accepted residual
+ * the README documents), appends the outbox record ALWAYS (a missing key
+ * skips only the kick; the sweeper delivers later), and kicks
+ * fire-and-forget delivery. The engine is constructed lazily on first use.
  *
  * Task 8's wiring: both prompt sections render from the representation
  * cache (`renderMemorySection`, sync reads only); the delivery engine's
@@ -46,21 +48,13 @@ import { createStatusHandler } from "./status.js";
 import { ExtensionStores, type StorePaths } from "./stores.js";
 import { createSweepTask, SWEEP_TASK_NAME } from "./sweep.js";
 import { createTools } from "./tools.js";
-import type { RunSettledEventLike } from "./types.js";
+import type { RunSettledEventLike, WorkerRunStatus } from "./types.js";
 
 /** This extension's registry name AND its selection-gate sentinel. */
 const EXTENSION_NAME = "@sigrun/memory-honcho";
 
 /** The shutdown drain deadline (spec: 25s under the host's shutdown budget). */
 const DRAIN_DEADLINE_MS = 25_000;
-
-/** Bookkeeping the worker's run body records (Task 8 fills the real work). */
-export interface WorkerRunStatus {
-	runs: number;
-	startedAt?: number;
-	endedAt?: number;
-	lastError?: string;
-}
 
 /** The factory result, plus the worker bookkeeping Task 8 reports from. */
 export type SigrunExtensionResultLike = SigrunExtensionResult & {
@@ -406,8 +400,11 @@ export function createHonchoMemory(
 						if (status !== undefined) status.endedAt = Date.now();
 					} catch (error) {
 						if (status !== undefined) {
-							status.lastError =
+							const message =
 								error instanceof Error ? error.message : String(error);
+							// Bounded: the status route projects this verbatim and a
+							// runaway error string must not blow up the body.
+							status.lastError = message.slice(0, 500);
 							status.endedAt = Date.now();
 						}
 						throw error;

@@ -18,13 +18,9 @@
  */
 import type { ExtensionStores } from "./stores.js";
 import type { HonchoSettings } from "./config.js";
-/** Bookkeeping one worker run records (re-declared: status.ts must not import the factory module — index.ts imports this one). */
-export interface StatusWorkerRun {
-    readonly runs: number;
-    readonly startedAt?: number;
-    readonly endedAt?: number;
-    readonly lastError?: string;
-}
+import type { WorkerRunStatus } from "./types.js";
+/** Alias for the shared worker bookkeeping (the one declaration lives in types.ts). */
+export type { WorkerRunStatus as StatusWorkerRun } from "./types.js";
 /** The status response body (the spec's exact field set). */
 export interface HonchoStatus {
     readonly configured: boolean;
@@ -52,7 +48,7 @@ export interface StatusDeps {
     readonly apiKey: () => Promise<string | undefined>;
     readonly stores: () => Promise<ExtensionStores>;
     /** The factory's worker bookkeeping map (Task 5/8's `workerStatus`). */
-    readonly workerStatus: ReadonlyMap<string, StatusWorkerRun>;
+    readonly workerStatus: ReadonlyMap<string, WorkerRunStatus>;
     /** The bookkeeping map key of the representation worker. */
     readonly workerName: string;
 }

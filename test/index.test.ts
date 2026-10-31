@@ -722,18 +722,61 @@ describe("createHonchoMemory", () => {
 	});
 
 
-	it("userDeleted only logs the departure (no data movement)", async () => {
+	it("userDeleted only logs the departure (no data movement — store files byte-identical)", async () => {
 		harness = await makeHarness({ apiKey: "sk-test" });
 		const info = vi.spyOn(console, "info").mockImplementation(() => {});
 		const result = createHonchoMemory(harness.host as never, {
 			createEngine: harness.createEngine,
 		});
-		await result.userDeleted?.(
-			{ user: "alice", transferTo: "admin" },
+		// Seed some store state the handler must NOT touch (peers are
+		// server-side Honcho state; the spec's deferred posture).
+		await result.runSettled?.(
+			answeredEvent() as never,
 			fakeEventApi(new Map()) as never,
 			CONTEXT,
 		);
+		const snapshot = async () => {
+			const { readdir, readFile, stat } = await import("node:fs/promises");
+			const walk = async (dir: string): Promise<Map<string, string>> => {
+				const files = new Map<string, string>();
+				let names: string[];
+				try {
+					names = await readdir(dir);
+				} catch {
+					return files;
+				}
+				for (const name of names) {
+					const path = join(dir, name);
+					if ((await stat(path)).isDirectory()) {
+						for (const [nested, content] of await walk(path)) {
+							files.set(join(name, nested), content);
+						}
+					} else {
+						files.set(name, await readFile(path, "utf8"));
+					}
+				}
+				return files;
+			};
+			const all = new Map<string, string>();
+			for (const root of Object.values(harness.host.stores.paths)) {
+				for (const [nested, content] of await walk(root)) {
+					all.set(join(root, nested), content);
+				}
+			}
+			return all;
+		};
+		const before = await snapshot();
+
+		await result.userDeleted?.(
+			{ user: "alice", transferTo: "bob" },
+			fakeEventApi(new Map()) as never,
+			CONTEXT,
+		);
+
 		expect(info).toHaveBeenCalledTimes(1);
-		expect(String(info.mock.calls[0]?.[0])).toContain("alice");
+		const line = String(info.mock.calls[0]?.[0]);
+		expect(line).toContain("alice");
+		expect(line).toContain("bob");
+		expect(await snapshot()).toEqual(before);
 	});
 });

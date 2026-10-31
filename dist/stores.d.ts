@@ -4,6 +4,9 @@
  * - `data/outbox/capture.jsonl` — the durable outbox (the only durable copy
  *   of not-yet-delivered conversation content, so it takes the backed-up
  *   bucket), one JSON record per line in append order.
+ * - `state/last-delivery.json` — the persistent newest-delivery marker the
+ *   status route reads (the sweeper drops delivered records, so the marker
+ *   is the only surviving source of `lastDeliveryAt` in steady state).
  * - `state/ledger/<conversationId>.json` — per-conversation bookkeeping
  *   (session mapping, delivered-batch window, fork anchors).
  * - `state/forks/pending/<childId>.json` — pending-fork records.
@@ -21,7 +24,7 @@
  * synchronous (the spec'd cache-read posture).
  */
 import type { HonchoSettings } from "./config.js";
-import type { Ledger, OutboxRecord, PendingForkRecord, RepresentationSnapshot } from "./types.js";
+import type { LastDeliveryMarker, Ledger, OutboxRecord, PendingForkRecord, RepresentationSnapshot } from "./types.js";
 /** The three store roots, exactly `host.stores.paths`' shape. */
 export interface StorePaths {
     readonly data: string;
@@ -68,4 +71,13 @@ export declare class ExtensionStores {
     resolvePendingFork(childId: number): Promise<PendingForkRecord | undefined>;
     readRepresentationSync(conversationId: number): RepresentationSnapshot | undefined;
     writeRepresentation(conversationId: number, snapshot: RepresentationSnapshot): Promise<void>;
+    /**
+     * `state/last-delivery.json` — the persistent "newest delivery" marker.
+     * The delivery engine writes it when it flips a record (inside the same
+     * outbox critical section), because the sweeper drops delivered records
+     * every 15 minutes — the status route's retained-records derivation dies
+     * with them.
+     */
+    readLastDelivery(): Promise<LastDeliveryMarker | undefined>;
+    writeLastDelivery(marker: LastDeliveryMarker): Promise<void>;
 }

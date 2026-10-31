@@ -11,7 +11,10 @@
  * (`withOutbox` around the read → ledger flip → rewrite cycle); it never
  * nests a second `withOutbox` inside it (the mutex is not re-entrant),
  * and the sweeper (Task 7) calls it per conversation OUTSIDE any outbox
- * lock — lock acquisition lives in one place per flow.
+ * lock — lock acquisition lives in one place per flow. A flipped batch
+ * also updates the `state/last-delivery.json` marker in the same critical
+ * section (the status route's newest-delivery read survives the sweeper's
+ * delivered-record drop that way).
  */
 import type { HonchoSettings } from "./config.js";
 import type { HonchoClient } from "./honcho.js";

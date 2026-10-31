@@ -11,7 +11,10 @@
  * (`withOutbox` around the read → ledger flip → rewrite cycle); it never
  * nests a second `withOutbox` inside it (the mutex is not re-entrant),
  * and the sweeper (Task 7) calls it per conversation OUTSIDE any outbox
- * lock — lock acquisition lives in one place per flow.
+ * lock — lock acquisition lives in one place per flow. A flipped batch
+ * also updates the `state/last-delivery.json` marker in the same critical
+ * section (the status route's newest-delivery read survives the sweeper's
+ * delivered-record drop that way).
  */
 
 import type { MessageInput, Peer, Session } from "@honcho-ai/sdk";
@@ -228,6 +231,27 @@ export class DeliveryEngine {
 						: record,
 				);
 				await this.#stores.rewriteOutbox(rewritten);
+				// The persistent newest-delivery marker, in the SAME critical
+				// section as the flip: the sweeper drops delivered records every
+				// 15 minutes, so the status route derives `lastDeliveryAt` from
+				// this marker (the retained-records derivation dies with them).
+				// `at` = the newest delivered record's createdAt — a monotonic
+				// max, so a stale flip can never move the marker backwards.
+				const newest = rewritten
+					.filter((record) => record.status === "delivered")
+					.reduce<number | undefined>(
+						(max, record) =>
+							max === undefined || record.createdAt > max
+								? record.createdAt
+								: max,
+						undefined,
+					);
+				if (newest !== undefined) {
+					const current = await this.#stores.readLastDelivery();
+					if (current === undefined || newest > current.at) {
+						await this.#stores.writeLastDelivery({ at: newest });
+					}
+				}
 				delivered = true;
 			});
 		});

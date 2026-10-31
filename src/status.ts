@@ -19,14 +19,13 @@
 
 import type { ExtensionStores } from "./stores.js";
 import type { HonchoSettings } from "./config.js";
+import type { WorkerRunStatus } from "./types.js";
 
-/** Bookkeeping one worker run records (re-declared: status.ts must not import the factory module — index.ts imports this one). */
-export interface StatusWorkerRun {
-	readonly runs: number;
-	readonly startedAt?: number;
-	readonly endedAt?: number;
-	readonly lastError?: string;
-}
+/** Alias for the shared worker bookkeeping (the one declaration lives in types.ts). */
+export type { WorkerRunStatus as StatusWorkerRun } from "./types.js";
+
+/** `lastError` is display-only and bounded — a huge error string must not blow up the status body. */
+const LAST_ERROR_MAX = 500;
 
 /** The status response body (the spec's exact field set). */
 export interface HonchoStatus {
@@ -56,7 +55,7 @@ export interface StatusDeps {
 	readonly apiKey: () => Promise<string | undefined>;
 	readonly stores: () => Promise<ExtensionStores>;
 	/** The factory's worker bookkeeping map (Task 5/8's `workerStatus`). */
-	readonly workerStatus: ReadonlyMap<string, StatusWorkerRun>;
+	readonly workerStatus: ReadonlyMap<string, WorkerRunStatus>;
 	/** The bookkeeping map key of the representation worker. */
 	readonly workerName: string;
 }
@@ -67,10 +66,15 @@ export async function buildStatus(deps: StatusDeps): Promise<HonchoStatus> {
 		deps.apiKey(),
 		deps.stores(),
 	]);
-	const [outbox, ledgers, forks] = await Promise.all([
-		stores.readOutbox(),
-		stores.readLedgers(),
-		stores.readPendingForks(),
+	// Best-effort snapshot: a corrupt file degrades that bucket's counts to
+	// zero rather than 500ing the route (display-only observability).
+	const safe = <T>(read: Promise<T[]>): Promise<T[]> =>
+		read.catch(() => [] as T[]);
+	const [outbox, ledgers, forks, marker] = await Promise.all([
+		safe(stores.readOutbox()),
+		safe(stores.readLedgers()),
+		safe(stores.readPendingForks()),
+		stores.readLastDelivery().catch(() => undefined),
 	]);
 
 	let lastDeliveryAt: number | null = null;
@@ -84,14 +88,28 @@ export async function buildStatus(deps: StatusDeps): Promise<HonchoStatus> {
 			pendingOutbox += 1;
 		}
 	}
+	// The marker wins when present: the sweeper drops delivered records
+	// every 15 minutes, so the retained-records derivation dies with them.
+	// The derivation is the fallback for an install that delivered before
+	// the marker existed.
+	if (marker !== undefined) {
+		lastDeliveryAt =
+			lastDeliveryAt === null
+				? marker.at
+				: Math.max(lastDeliveryAt, marker.at);
+	}
 
 	const run = deps.workerStatus.get(deps.workerName);
 	// `endedAt` is the last COMPLETED run; a still-running worker's most
 	// recent activity is its `startedAt`.
 	const lastRunAt = run === undefined ? undefined : (run.endedAt ?? run.startedAt);
+	const lastError =
+		run?.lastError === undefined
+			? undefined
+			: run.lastError.slice(0, LAST_ERROR_MAX);
 	const worker: HonchoStatus["worker"] = {
 		...(lastRunAt !== undefined ? { lastRunAt } : {}),
-		...(run?.lastError !== undefined ? { lastError: run.lastError } : {}),
+		...(lastError !== undefined ? { lastError } : {}),
 	};
 
 	// The key string is discarded the instant the boolean is taken — it can

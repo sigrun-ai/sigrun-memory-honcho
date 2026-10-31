@@ -217,6 +217,90 @@ describe("buildStatus", () => {
 		});
 	});
 
+	it("the pending-record newest-createdAt discrimination: a pending record NEWER than every delivery never wins lastDeliveryAt", async () => {
+		vi.stubEnv(API_KEY_ENV, "");
+		const { stores } = await makeStores();
+		await stores.withOutbox(async () => {
+			await stores.appendOutboxRecord(
+				record("b-delivered", { status: "delivered", createdAt: 1_000 }),
+			);
+			// The LARGEST createdAt in the file, but PENDING: lastDeliveryAt
+			// must be the newest DELIVERED (1_000), not the newest record.
+			await stores.appendOutboxRecord(
+				record("b-pending", { status: "pending", createdAt: 9_999 }),
+			);
+		});
+		const status = await buildStatus(makeDeps(stores));
+		expect(status.lastDeliveryAt).toBe(1_000);
+		expect(status.pendingOutbox).toBe(1);
+	});
+
+	it("the last-delivery marker survives the sweeper's delivered-record compaction", async () => {
+		vi.stubEnv(API_KEY_ENV, "");
+		const { stores } = await makeStores();
+		await stores.withOutbox(async () => {
+			await stores.appendOutboxRecord(
+				record("b-gone", { status: "delivered", createdAt: 4_000 }),
+			);
+		});
+		await stores.writeLastDelivery({ at: 4_000 });
+		// The steady state: the sweeper dropped every delivered record.
+		await stores.withOutbox(() => stores.rewriteOutbox([]));
+
+		const status = await buildStatus(makeDeps(stores));
+		expect(status.lastDeliveryAt).toBe(4_000);
+	});
+
+	it("falls back to the retained-records derivation when the marker is absent", async () => {
+		vi.stubEnv(API_KEY_ENV, "");
+		const { stores } = await makeStores();
+		await stores.withOutbox(() =>
+			stores.appendOutboxRecord(
+				record("b-old", { status: "delivered", createdAt: 5_000 }),
+			),
+		);
+		const status = await buildStatus(makeDeps(stores));
+		expect(status.lastDeliveryAt).toBe(5_000);
+	});
+
+	it("a corrupt store file degrades the counts instead of failing the request", async () => {
+		vi.stubEnv(API_KEY_ENV, "");
+		const { dir, stores } = await makeStores();
+		const { mkdir, writeFile } = await import("node:fs/promises");
+		// A corrupt outbox line + a corrupt ledger file: JSON.parse throws.
+		await mkdir(join(dir, "data", "outbox"), { recursive: true });
+		await writeFile(
+			join(dir, "data", "outbox", "capture.jsonl"),
+			"{not json\n",
+			"utf8",
+		);
+		await mkdir(join(dir, "state", "ledger"), { recursive: true });
+		await writeFile(join(dir, "state", "ledger", "7.json"), "{corrupt", "utf8");
+
+		const status = await buildStatus(makeDeps(stores));
+		expect(status).toMatchObject({
+			lastDeliveryAt: null,
+			pendingOutbox: 0,
+			ledgers: 0,
+			pendingForks: 0,
+			sessions: 0,
+		});
+	});
+
+	it("worker lastError is capped at 500 characters", async () => {
+		vi.stubEnv(API_KEY_ENV, "");
+		const { stores } = await makeStores();
+		const status = await buildStatus(
+			makeDeps(stores, {
+				workerStatus: new Map([
+					[WORKER_NAME, { runs: 1, endedAt: 1_000, lastError: "x".repeat(1_000) }],
+				]),
+			}),
+		);
+		expect(status.worker.lastError).toBeDefined();
+		expect(status.worker.lastError!.length).toBeLessThanOrEqual(500);
+	});
+
 	it("worker lastRunAt falls back to startedAt while a run is in flight", async () => {
 		vi.stubEnv(API_KEY_ENV, "");
 		const { stores } = await makeStores();

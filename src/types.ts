@@ -130,3 +130,27 @@ export type RepresentationSnapshot = {
 	readonly projectSummary: string | null;
 	readonly fetchedAt: number;
 };
+
+/**
+ * `state/last-delivery.json`: the persistent marker of the newest DELIVERY
+ * (`at` = the delivered record's `createdAt`). The sweeper drops delivered
+ * records every 15 minutes, so the status route cannot derive
+ * `lastDeliveryAt` from retained records in steady state — the delivery
+ * engine writes this marker when it flips a record, inside the same outbox
+ * critical section as the flip (stores.ts / status.ts).
+ */
+export type LastDeliveryMarker = {
+	readonly at: number;
+};
+
+/**
+ * The worker-run bookkeeping the factory records and the status route
+ * projects. The ONE declaration lives here: `src/index.ts` (writer) and
+ * `src/status.ts` (reader) both alias it, so the two sides cannot drift.
+ */
+export type WorkerRunStatus = {
+	runs: number;
+	startedAt?: number;
+	endedAt?: number;
+	lastError?: string;
+};

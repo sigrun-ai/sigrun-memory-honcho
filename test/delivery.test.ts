@@ -427,6 +427,24 @@ describe("deliverPending", () => {
 		expect(outbox[0]?.status).toBe("delivered");
 	});
 
+	it("a delivered flip writes the last-delivery marker (written per flip; the sweeper's delivered-drop cannot erase it)", async () => {
+		const harness = fakeSdk();
+		const { stores } = await makeStores();
+		const engine = makeEngine(harness, stores);
+		await engine.establish(7, "alice");
+		expect(await stores.readLastDelivery()).toBeUndefined();
+
+		await stores.withOutbox(() =>
+			stores.appendOutboxRecord(record("b-marker", { createdAt: 3_000 })),
+		);
+		await engine.deliverPending(7, "alice");
+
+		// The marker carries the delivered record's createdAt (not Date.now()
+		// — it answers "when was the newest DELIVERED batch captured", the
+		// same value the status route derives from retained records).
+		expect(await stores.readLastDelivery()).toEqual({ at: 3_000 });
+	});
+
 	it("an unanswered batch folds NO anchor", async () => {
 		const harness = fakeSdk();
 		const { stores } = await makeStores();

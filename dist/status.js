@@ -16,16 +16,22 @@
  *   is explicitly a display-only read (the stores' own posture), and every
  *   count comes from fresh disk reads — never from cached state.
  */
+/** `lastError` is display-only and bounded — a huge error string must not blow up the status body. */
+const LAST_ERROR_MAX = 500;
 export async function buildStatus(deps) {
     const [settings, apiKey, stores] = await Promise.all([
         deps.settings(),
         deps.apiKey(),
         deps.stores(),
     ]);
-    const [outbox, ledgers, forks] = await Promise.all([
-        stores.readOutbox(),
-        stores.readLedgers(),
-        stores.readPendingForks(),
+    // Best-effort snapshot: a corrupt file degrades that bucket's counts to
+    // zero rather than 500ing the route (display-only observability).
+    const safe = (read) => read.catch(() => []);
+    const [outbox, ledgers, forks, marker] = await Promise.all([
+        safe(stores.readOutbox()),
+        safe(stores.readLedgers()),
+        safe(stores.readPendingForks()),
+        stores.readLastDelivery().catch(() => undefined),
     ]);
     let lastDeliveryAt = null;
     let pendingOutbox = 0;
@@ -39,13 +45,26 @@ export async function buildStatus(deps) {
             pendingOutbox += 1;
         }
     }
+    // The marker wins when present: the sweeper drops delivered records
+    // every 15 minutes, so the retained-records derivation dies with them.
+    // The derivation is the fallback for an install that delivered before
+    // the marker existed.
+    if (marker !== undefined) {
+        lastDeliveryAt =
+            lastDeliveryAt === null
+                ? marker.at
+                : Math.max(lastDeliveryAt, marker.at);
+    }
     const run = deps.workerStatus.get(deps.workerName);
     // `endedAt` is the last COMPLETED run; a still-running worker's most
     // recent activity is its `startedAt`.
     const lastRunAt = run === undefined ? undefined : (run.endedAt ?? run.startedAt);
+    const lastError = run?.lastError === undefined
+        ? undefined
+        : run.lastError.slice(0, LAST_ERROR_MAX);
     const worker = {
         ...(lastRunAt !== undefined ? { lastRunAt } : {}),
-        ...(run?.lastError !== undefined ? { lastError: run.lastError } : {}),
+        ...(lastError !== undefined ? { lastError } : {}),
     };
     // The key string is discarded the instant the boolean is taken — it can
     // never reach the body.

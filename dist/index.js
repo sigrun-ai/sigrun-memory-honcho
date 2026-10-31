@@ -9,11 +9,13 @@
  *
  * The factory composes Tasks 1-4: per-event it resolves settings and the
  * API key LIVE (a key written after boot applies at the next event), gates
- * capture on the conversation's extension selection (memoized per
- * conversation — the selection does not change mid-conversation), appends
- * the outbox record ALWAYS (a missing key skips only the kick; the sweeper
- * delivers later), and kicks fire-and-forget delivery. The engine is
- * constructed lazily on first use.
+ * capture on the conversation's extension selection (POSITIVE verdicts
+ * memoized per conversation — a cached `false` is re-read on the next
+ * event, so a mid-conversation opt-in captures; a mid-conversation
+ * array-form opt-out keeps capturing until restart, the accepted residual
+ * the README documents), appends the outbox record ALWAYS (a missing key
+ * skips only the kick; the sweeper delivers later), and kicks
+ * fire-and-forget delivery. The engine is constructed lazily on first use.
  *
  * Task 8's wiring: both prompt sections render from the representation
  * cache (`renderMemorySection`, sync reads only); the delivery engine's
@@ -296,8 +298,10 @@ export function createHonchoMemory(host, deps = {}) {
                     }
                     catch (error) {
                         if (status !== undefined) {
-                            status.lastError =
-                                error instanceof Error ? error.message : String(error);
+                            const message = error instanceof Error ? error.message : String(error);
+                            // Bounded: the status route projects this verbatim and a
+                            // runaway error string must not blow up the body.
+                            status.lastError = message.slice(0, 500);
                             status.endedAt = Date.now();
                         }
                         throw error;
