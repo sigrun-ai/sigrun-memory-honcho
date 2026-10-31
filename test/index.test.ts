@@ -142,7 +142,7 @@ describe("createHonchoMemory", () => {
 
 	afterEach(async () => {
 		vi.restoreAllMocks();
-		await harness.cleanup();
+		await harness?.cleanup();
 	});
 
 	it("declares the host parameter exactly once (loader factory.length gate)", async () => {
@@ -430,6 +430,116 @@ describe("createHonchoMemory", () => {
 		);
 		expect(response).toBeInstanceOf(Response);
 		expect(response?.status).toBe(200);
+	});
+
+	it("a fresh key/settings change rebuilds the engine; an unchanged pair reuses it", async () => {
+		// Harness with a MUTABLE secret: key A for the first events, key B after.
+		const root = await mkdtemp(join(tmpdir(), "memory-honcho-index-"));
+		harness = {
+			dirs: [root],
+			cleanup: async () => {
+				await rm(root, { recursive: true, force: true });
+			},
+			host: undefined as never,
+			engine: { establishCalls: [], kickCalls: [], drainCalls: [] },
+			createEngine: () => {
+				throw new Error("unused");
+			},
+		};
+		let apiKey: string | undefined = "sk-A";
+		const host = {
+			stores: {
+				secrets: { get: async () => apiKey },
+				settings: { get: async () => ({}) },
+				paths: {
+					data: join(root, "data"),
+					state: join(root, "state"),
+					cache: join(root, "cache"),
+				},
+			},
+		};
+		const clientKeys: (string | undefined)[] = [];
+		const kicks: { conversationId: number; owner: string }[] = [];
+		const result = createHonchoMemory(host as never, {
+			createClient: (_settings, key) => {
+				clientKeys.push(key);
+				return {} as never;
+			},
+			createEngine: () =>
+				({
+					kick: (conversationId: number, owner: string) => {
+						kicks.push({ conversationId, owner });
+					},
+				}) as never,
+		});
+		const api = fakeEventApi(new Map());
+
+		await result.runSettled?.(answeredEvent() as never, api as never, CONTEXT);
+		// Same settings + same key: engine reused (one construction).
+		await result.runSettled?.(answeredEvent({ inputs: [44] }) as never, api as never, CONTEXT);
+		expect(clientKeys).toEqual(["sk-A"]);
+
+		// The key changed: the engine is rebuilt with the new key.
+		apiKey = "sk-B";
+		await result.runSettled?.(answeredEvent({ inputs: [45] }) as never, api as never, CONTEXT);
+		expect(clientKeys).toEqual(["sk-A", "sk-B"]);
+		expect(kicks).toHaveLength(3);
+	});
+
+	it("a rejected engine construction is NOT memoized — the next event retries", async () => {
+		harness = await makeHarness({ apiKey: "sk-test" });
+		let failures = 0;
+		let builds = 0;
+		const result = createHonchoMemory(harness.host as never, {
+			createEngine: () => {
+				builds += 1;
+				if (failures > 0) {
+					failures -= 1;
+					return Promise.reject(new Error("store read failed")) as never;
+				}
+				return harness.createEngine({} as never, {} as never, {} as never);
+			},
+		});
+		const api = fakeEventApi(new Map());
+
+		failures = 1;
+		await expect(
+			result.runSettled?.(answeredEvent() as never, api as never, CONTEXT),
+		).rejects.toThrow("store read failed");
+		expect(builds).toBe(1);
+
+		// The failure was not memoized: the next event constructs again and succeeds.
+		await result.runSettled?.(answeredEvent({ inputs: [44] }) as never, api as never, CONTEXT);
+		expect(builds).toBe(2);
+		expect(harness.engine.kickCalls).toEqual([
+			{ conversationId: 7, owner: "alice" },
+		]);
+	});
+
+	it("a false selection verdict is NOT memoized — a later opt-in captures", async () => {
+		harness = await makeHarness({ apiKey: "sk-test" });
+		const result = createHonchoMemory(harness.host as never, {
+			createEngine: harness.createEngine,
+		});
+		// Event 1: array-form excluding us → skipped (and NOT cached).
+		const documents: DocumentMap = new Map([[7, { extensions: ["other"] }]]);
+		await result.runSettled?.(
+			answeredEvent() as never,
+			fakeEventApi(documents) as never,
+			CONTEXT,
+		);
+		expect(harness.engine.kickCalls).toEqual([]);
+
+		// Event 2, same conversation: the selection now includes us → capture.
+		documents.set(7, { extensions: ["@sigrun/memory-honcho", "other"] });
+		await result.runSettled?.(
+			answeredEvent({ inputs: [44] }) as never,
+			fakeEventApi(documents) as never,
+			CONTEXT,
+		);
+		expect(harness.engine.kickCalls).toEqual([
+			{ conversationId: 7, owner: "alice" },
+		]);
 	});
 
 	it("userDeleted only logs the departure (no data movement)", async () => {

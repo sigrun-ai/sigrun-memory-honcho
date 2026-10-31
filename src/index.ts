@@ -81,6 +81,26 @@ function warnMissingKeyOnce(): void {
 	);
 }
 
+/**
+ * Structural equality over the resolved settings (an engine rebuild is
+ * warranted only when an actual value changed, not on a fresh object).
+ */
+function settingsEqual(a: HonchoSettings, b: HonchoSettings): boolean {
+	return (
+		a.agentPeerId === b.agentPeerId &&
+		a.baseUrl === b.baseUrl &&
+		a.workspaceId === b.workspaceId &&
+		a.contextTokens === b.contextTokens &&
+		a.maxMessageLength === b.maxMessageLength &&
+		a.searchLimit === b.searchLimit &&
+		a.toolPreviewLength === b.toolPreviewLength &&
+		a.representationTtlMs === b.representationTtlMs &&
+		a.outboxRetentionDays === b.outboxRetentionDays &&
+		a.deliveredBatchWindow === b.deliveredBatchWindow &&
+		a.anchorWindow === b.anchorWindow
+	);
+}
+
 export function createHonchoMemory(
 	host: SigrunHost,
 	deps: FactoryDeps = {},
@@ -93,6 +113,21 @@ export function createHonchoMemory(
 	// moment, so configuration written after boot still applies.
 	let storesPromise: Promise<ExtensionStores> | undefined;
 	let enginePromise: Promise<DeliveryEngine> | undefined;
+	// The configuration the cached engine was built with: it is reused ONLY
+	// while both are unchanged (stored wins without restart — the key can
+	// arrive after boot).
+	let engineKey: string | undefined;
+	let engineSettings: HonchoSettings | undefined;
+
+	function makeClient(
+		settings: HonchoSettings,
+		apiKey: string | undefined,
+	): HonchoClient {
+		return (deps.createClient ?? ((s, key) => new HonchoClient(s, key)))(
+			settings,
+			apiKey,
+		);
+	}
 
 	function stores(): Promise<ExtensionStores> {
 		storesPromise ??= resolveSettings(settingsStore).then(
@@ -101,25 +136,47 @@ export function createHonchoMemory(
 		return storesPromise;
 	}
 
-	function engine(): Promise<DeliveryEngine> {
-		enginePromise ??= (async () => {
-			const settings = await resolveSettings(settingsStore);
-			const apiKey = await resolveApiKey(secretsStore);
-			const client = (deps.createClient ?? ((s, key) => new HonchoClient(s, key)))(
-				settings,
-				apiKey,
-			);
+	async function engine(): Promise<DeliveryEngine> {
+		// Resolve FIRST, cache-compare second: a key/settings change rebuilds.
+		const settings = await resolveSettings(settingsStore);
+		const apiKey = await resolveApiKey(secretsStore);
+		if (
+			enginePromise !== undefined &&
+			apiKey === engineKey &&
+			engineSettings !== undefined &&
+			settingsEqual(settings, engineSettings)
+		) {
+			return enginePromise;
+		}
+		const building = (async () => {
+			const client = makeClient(settings, apiKey);
 			return (deps.createEngine ?? ((c, st, s) => new DeliveryEngine(c, st, s)))(
 				client,
 				await stores(),
 				settings,
 			);
 		})();
-		return enginePromise;
+		enginePromise = building;
+		engineKey = apiKey;
+		engineSettings = settings;
+		// A rejected build is never memoized (identity-guarded, same class as
+		// the Task-2 peer memo): the next event retries the construction.
+		building.catch(() => {
+			if (enginePromise === building) {
+				enginePromise = undefined;
+				engineKey = undefined;
+				engineSettings = undefined;
+			}
+		});
+		return building;
 	}
 
-	// Per-conversation selection memo: the extension selection does not
-	// change mid-conversation, so the AgentDoc read happens once each.
+	// Per-conversation selection memo: POSITIVE verdicts only (a `configure`
+	// or owner transfer can rewrite the selection mid-conversation). A cached
+	// `false` is never trusted — the AgentDoc is re-read on the next event, so
+	// a later opt-in captures; the residual (an array-form opt-out AFTER a
+	// positive verdict keeps capturing until restart) is the accepted v1
+	// semantics, documented in the README.
 	const selectionMemo = new Map<number, boolean>();
 
 	async function isSelected(
@@ -142,7 +199,7 @@ export function createHonchoMemory(
 		const selected =
 			!Array.isArray(agent?.extensions) ||
 			agent.extensions.includes(EXTENSION_NAME);
-		selectionMemo.set(conversationId, selected);
+		if (selected) selectionMemo.set(conversationId, true);
 		return selected;
 	}
 
@@ -205,11 +262,7 @@ export function createHonchoMemory(
 		async harnessShutdown() {
 			const settings = await resolveSettings(settingsStore);
 			const apiKey = await resolveApiKey(secretsStore);
-			const client = (deps.createClient ?? ((s, key) => new HonchoClient(s, key)))(
-				settings,
-				apiKey,
-			);
-			await client.drainAll(DRAIN_DEADLINE_MS);
+			await makeClient(settings, apiKey).drainAll(DRAIN_DEADLINE_MS);
 		},
 
 		workers: [
