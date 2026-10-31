@@ -1,0 +1,16 @@
+node_modules/
+# dist/ is INTENTIONALLY tracked (no gitignore entry): the git-source
+# install shape ("git:host/path") loads dist/index.js directly with no
+# build step, so a build artifact commit is the load surface.
+# agent/dev artifacts
+.superpowers/
+REPORT.md
+.vitest/
+*.tgz
+.pi/
+coverage/
+.env
+.vcc/
+*.pem
+.npmrc
+pi-warden.md
