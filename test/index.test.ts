@@ -620,9 +620,9 @@ describe("createHonchoMemory", () => {
 		harness = await makeHarness({ apiKey: "sk-test" });
 		// No engine seam: the default construction makes the refresh eligible
 		// (a custom createEngine skips it — production uses the real engine).
-		// A stubbed MEMOIZED client: the factory hands the engine AND the
-		// worker the same instance, so the pre-established session mark is
-		// visible to the worker's refresh gate (production parity).
+		// A stubbed client with a pre-established session mark; the factory
+		// must hand the engine AND the worker the SAME memoized instance, so
+		// the worker's refresh gate sees the mark (production parity).
 		const { ConversationClient } = await import("../src/honcho.js");
 		const conversation = new ConversationClient("7");
 		conversation.markEstablished(Promise.resolve({} as never));
@@ -630,8 +630,15 @@ describe("createHonchoMemory", () => {
 			for: () => conversation,
 			drainAll: async () => {},
 		};
+		// THE DISCRIMINATOR (review round 2): construction count. The pre-fix
+		// worker called `makeClient` per run — a second construction — while
+		// the fix reuses the engine's memoized client (exactly one build).
+		let clientBuilds = 0;
 		const result = createHonchoMemory(harness.host as never, {
-			createClient: () => stubClient as never,
+			createClient: () => {
+				clientBuilds += 1;
+				return stubClient as never;
+			},
 		});
 		const { ExtensionStores } = await import("../src/stores.js");
 		const stores = new ExtensionStores(harness.host.stores.paths, SETTINGS);
@@ -657,6 +664,10 @@ describe("createHonchoMemory", () => {
 
 		expect(refresh).toHaveBeenCalledTimes(1);
 		expect(refresh.mock.calls[0]?.[0]).toBe(stubClient);
+		// One build total: the engine's construction. The pre-fix code built
+		// a second client inside the worker run (identity still matched a
+		// memoized stub — construction count is what discriminates).
+		expect(clientBuilds).toBe(1);
 		expect(refresh.mock.calls[0]?.[3]).toBe(7);
 		expect(refresh.mock.calls[0]?.[4]).toBe("alice");
 		expect(result.workerStatus?.get("honcho-representations")?.runs).toBe(1);
