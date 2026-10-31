@@ -21,6 +21,7 @@ import { resolveApiKey, resolveSettings, } from "./config.js";
 import { DeliveryEngine } from "./delivery.js";
 import { HonchoClient } from "./honcho.js";
 import { ExtensionStores } from "./stores.js";
+import { createSweepTask } from "./sweep.js";
 /** This extension's registry name AND its selection-gate sentinel. */
 const EXTENSION_NAME = "@sigrun/memory-honcho";
 /** The shutdown drain deadline (spec: 25s under the host's shutdown budget). */
@@ -134,7 +135,10 @@ export function createHonchoMemory(host, deps = {}) {
                 section("long-term-memory", () => undefined),
                 section("honcho-memory", () => undefined),
             ],
-            tasks: [],
+            tasks: [
+                // The outbox sweeper (fired by the outbox-sweep cron job below).
+                createSweepTask({ engine, stores, settings: () => resolveSettings(settingsStore) }),
+            ],
         }),
         workerStatus,
         async runSettled(event, api, context) {

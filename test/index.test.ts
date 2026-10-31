@@ -158,7 +158,13 @@ describe("createHonchoMemory", () => {
 
 		expect(result.extension?.name).toBe("@sigrun/memory-honcho");
 		expect(result.extension?.tools).toEqual([]);
-		expect(result.extension?.tasks).toEqual([]);
+		const tasks = result.extension?.tasks ?? [];
+		expect(
+			tasks.map(
+				(task: { readonly definition: { readonly name: string } }) =>
+					task.definition.name,
+			),
+		).toEqual(["honcho-outbox-sweep"]);
 		expect(
 			result.extension?.sections?.map(
 				(s: { readonly key: string }) => s.key,
