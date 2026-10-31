@@ -14,12 +14,19 @@
  * the outbox record ALWAYS (a missing key skips only the kick; the sweeper
  * delivers later), and kicks fire-and-forget delivery. The engine is
  * constructed lazily on first use.
+ *
+ * Task 8's wiring: both prompt sections render from the representation
+ * cache (`renderMemorySection`, sync reads only); the delivery engine's
+ * `onDelivered` is the LEADING-EDGE injection point — a delivered
+ * conversation with NO cache file refreshes once; and the idle/archived
+ * worker re-refreshes from the ledger's owner.
  */
 import { AgentDoc, defineExtension, section } from "@earendil-works/pi-durable";
 import { buildCaptureBatch } from "./capture.js";
 import { resolveApiKey, resolveSettings, } from "./config.js";
 import { DeliveryEngine } from "./delivery.js";
 import { HonchoClient } from "./honcho.js";
+import { refreshRepresentation, renderMemorySection } from "./representations.js";
 import { ExtensionStores } from "./stores.js";
 import { createSweepTask, SWEEP_TASK_NAME } from "./sweep.js";
 /** This extension's registry name AND its selection-gate sentinel. */
@@ -58,6 +65,10 @@ export function createHonchoMemory(host, deps = {}) {
     // Lazily constructed on first use — settings/key are resolved at that
     // moment, so configuration written after boot still applies.
     let storesPromise;
+    // The sync-readable slot behind `storesPromise` (promise .then callbacks
+    // are microtasks, NEVER synchronous, so the prompt sections — sync by
+    // contract — cannot inspect the promise; they read this slot instead).
+    let resolvedStores;
     let enginePromise;
     // The configuration the cached engine was built with: it is reused ONLY
     // while both are unchanged (stored wins without restart — the key can
@@ -68,8 +79,23 @@ export function createHonchoMemory(host, deps = {}) {
         return (deps.createClient ?? ((s, key) => new HonchoClient(s, key)))(settings, apiKey);
     }
     function stores() {
-        storesPromise ??= resolveSettings(settingsStore).then((settings) => new ExtensionStores(paths, settings));
+        storesPromise ??= resolveSettings(settingsStore).then((settings) => {
+            resolvedStores = new ExtensionStores(paths, settings);
+            return resolvedStores;
+        });
         return storesPromise;
+    }
+    /**
+     * The prompt-section posture: render ONLY once the stores are
+     * constructed — the reads are sync, so a section must never block
+     * prompt assembly on the settings read behind the stores' lazy
+     * construction. Before the first event (or from a section render
+     * racing it), there is nothing to render.
+     */
+    function renderMemorySectionSync(conversationId) {
+        if (resolvedStores === undefined)
+            return undefined;
+        return renderMemorySection(resolvedStores, conversationId, Date.now());
     }
     async function engine() {
         // Resolve FIRST, cache-compare second: a key/settings change rebuilds.
@@ -83,7 +109,30 @@ export function createHonchoMemory(host, deps = {}) {
         }
         const building = (async () => {
             const client = makeClient(settings, apiKey);
-            return (deps.createEngine ?? ((c, st, s) => new DeliveryEngine(c, st, s)))(client, await stores(), settings);
+            // The leading-edge hook: a delivered conversation whose
+            // representation cache is ABSENT refreshes once (a present cache
+            // is fresh enough — the idle worker owns re-refreshes). The
+            // refresh runs inside the conversation's chain (it chains
+            // itself), behind the delivery work the hook is called from.
+            // Failures log and are swallowed: a failed refresh must never
+            // fault the delivery it rode in on.
+            const hooks = {
+                onDelivered: async (conversationId) => {
+                    const store = await stores();
+                    if (store.readRepresentationSync(conversationId) !== undefined)
+                        return;
+                    const ledger = store.readLedgerSync(conversationId);
+                    if (ledger === undefined)
+                        return;
+                    try {
+                        await refreshRepresentation(client, store, settings, conversationId, ledger.ownerAtFirstCapture);
+                    }
+                    catch (error) {
+                        console.error(`memory-honcho: leading-edge representation refresh failed for conversation ${conversationId}`, error);
+                    }
+                },
+            };
+            return (deps.createEngine ?? ((c, st, s, h) => new DeliveryEngine(c, st, s, h)))(client, await stores(), settings, hooks);
         })();
         enginePromise = building;
         engineKey = apiKey;
@@ -131,9 +180,9 @@ export function createHonchoMemory(host, deps = {}) {
             name: EXTENSION_NAME,
             tools: [],
             sections: [
-                // Render bodies land in Task 8.
-                section("long-term-memory", () => undefined),
-                section("honcho-memory", () => undefined),
+                // Both sections render the same cache snapshot.
+                section("long-term-memory", (input) => renderMemorySectionSync(Number(input.conversationId))),
+                section("honcho-memory", (input) => renderMemorySectionSync(Number(input.conversationId))),
             ],
             tasks: [
                 // The outbox sweeper (fired by the outbox-sweep cron job below).
@@ -182,16 +231,40 @@ export function createHonchoMemory(host, deps = {}) {
                 name: "honcho-representations",
                 wakeOn: ["conversationIdle", "conversationArchived"],
                 async run(_context, wake) {
-                    // Bookkeeping only until Task 8 fills the refresh body; the
-                    // engine resolution is the seam that body needs first.
                     const status = workerStatus.get("honcho-representations");
                     if (status !== undefined) {
                         status.runs += 1;
                         status.startedAt = Date.now();
                     }
                     try {
-                        void wake;
-                        await engine();
+                        // The wake carries the conversation to re-refresh; the
+                        // owner comes from the ledger (the same record the
+                        // render gates on, so a ledger-less conversation is a
+                        // bookkeeping-only no-op). The engine resolution keeps
+                        // client/stores warm and honors the live-settings seam;
+                        // a custom `createEngine` (tests) skips the refresh.
+                        if (wake !== undefined) {
+                            const resolvedEngine = await engine();
+                            if (resolvedEngine instanceof DeliveryEngine &&
+                                engineSettings !== undefined) {
+                                const store = await stores();
+                                // SAFETY: the host's WorkerWake carries a branded
+                                // ConversationId; branded ids are plain numbers (see
+                                // src/types.ts), so Number() is the honest unwrapping.
+                                const conversationId = Number(wake.conversationId);
+                                const ledger = store.readLedgerSync(conversationId);
+                                if (ledger !== undefined) {
+                                    // A conversation without an established session
+                                    // (never delivered — e.g. idle before the first
+                                    // capture) has nothing to snapshot; skip quietly.
+                                    const client = makeClient(engineSettings, engineKey);
+                                    const conversation = client.for(String(conversationId));
+                                    if (conversation.hasSession()) {
+                                        await refreshRepresentation(client, store, engineSettings, conversationId, ledger.ownerAtFirstCapture);
+                                    }
+                                }
+                            }
+                        }
                         if (status !== undefined)
                             status.endedAt = Date.now();
                     }

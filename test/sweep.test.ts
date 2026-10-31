@@ -251,6 +251,7 @@ describe("createSweepTask", () => {
 	});
 
 	it("drops delivered records the engine flipped, keeping file order of the rest", async () => {
+		const info = vi.spyOn(console, "info").mockImplementation(() => {});
 		const harness = tracked(await makeHarness({
 			engine: {
 				deliverPending: async (conversationId: number) => {
@@ -379,6 +380,7 @@ describe("createSweepTask", () => {
 	});
 
 	it("drops a pending record already in the ledger's delivered window, silently", async () => {
+		const info = vi.spyOn(console, "info").mockImplementation(() => {});
 		const harness = tracked(await makeHarness());
 		// Skipped-but-lingering: the batch was sent (ledger flipped) but the
 		// record never flipped to delivered (the accepted crash window).

@@ -5,10 +5,20 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentState } from "@earendil-works/pi-durable";
 
+import { refreshRepresentation } from "../src/representations.js";
 import type { DeliveryEngine } from "../src/delivery.js";
 import type { HonchoClient } from "../src/honcho.js";
+import type { HonchoSettings } from "../src/config.js";
 import type { RunSettledEventLike } from "../src/types.js";
 import createHonchoMemory, { type FactoryDeps } from "../src/index.js";
+
+vi.mock("../src/representations.js", async (importOriginal) => {
+	const original = await importOriginal<typeof import("../src/representations.js")>();
+	return {
+		...original,
+		refreshRepresentation: vi.fn(original.refreshRepresentation),
+	};
+});
 
 // -- fake host --------------------------------------------------------------
 
@@ -102,6 +112,20 @@ function fakeEventApi(documents: DocumentMap) {
 }
 
 const CONTEXT = { abortSignal: undefined };
+
+const SETTINGS: HonchoSettings = {
+	agentPeerId: "test-agent",
+	baseUrl: undefined,
+	workspaceId: "test-workspace",
+	contextTokens: 1200,
+	maxMessageLength: 8000,
+	searchLimit: 8,
+	toolPreviewLength: 500,
+	representationTtlMs: 600_000,
+	outboxRetentionDays: 30,
+	deliveredBatchWindow: 200,
+	anchorWindow: 1000,
+};
 
 // -- events ------------------------------------------------------------------
 
@@ -503,7 +527,7 @@ describe("createHonchoMemory", () => {
 					failures -= 1;
 					return Promise.reject(new Error("store read failed")) as never;
 				}
-				return harness.createEngine({} as never, {} as never, {} as never);
+				return harness.createEngine({} as never, {} as never, {} as never, {});
 			},
 		});
 		const api = fakeEventApi(new Map());
@@ -547,6 +571,139 @@ describe("createHonchoMemory", () => {
 			{ conversationId: 7, owner: "alice" },
 		]);
 	});
+
+	it("the sections render from the representation cache (sync reads)", async () => {
+		harness = await makeHarness({ apiKey: "sk-test" });
+		const result = createHonchoMemory(harness.host as never, {
+			createEngine: harness.createEngine,
+		});
+		const sections = result.extension?.sections ?? [];
+		const promptInput = { conversationId: 7 } as never;
+
+		// Stores not yet lazily constructed: nothing to render.
+		expect(await sections[0]?.render(promptInput, CONTEXT as never)).toBeUndefined();
+
+		// Let the factory resolve the lazily constructed stores.
+		await result.runSettled?.(
+			answeredEvent() as never,
+			fakeEventApi(new Map()) as never,
+			CONTEXT,
+		);
+
+		// Before any delivery, nothing is on disk: both sections render nothing.
+		expect(await sections[0]?.render(promptInput, CONTEXT as never)).toBeUndefined();
+		expect(await sections[1]?.render(promptInput, CONTEXT as never)).toBeUndefined();
+
+		// Write the ledger + snapshot through the real store surface.
+		const { ExtensionStores } = await import("../src/stores.js");
+		const stores = new ExtensionStores(harness.host.stores.paths, SETTINGS);
+		await stores.writeLedger(7, {
+			conversationId: 7,
+			honchoSessionId: "sigrun-7",
+			ownerAtFirstCapture: "alice",
+			deliveredBatchIds: [],
+			anchors: [],
+		});
+		await stores.writeRepresentation(7, {
+			userProfile: "Alice likes tea.",
+			projectSummary: "The project ships memory.",
+			fetchedAt: 1_000,
+		});
+
+		const expected =
+			"[Persistent memory]\nUser profile:\nAlice likes tea.\nProject summary:\nThe project ships memory.";
+		expect(await sections[0]?.render(promptInput, CONTEXT as never)).toBe(expected);
+		expect(await sections[1]?.render(promptInput, CONTEXT as never)).toBe(expected);
+	});
+
+	it("the worker refreshes wake.conversationId's representation only, with the ledger owner", async () => {
+		harness = await makeHarness({ apiKey: "sk-test" });
+		// No engine seam: the default construction makes the refresh eligible
+		// (a custom createEngine skips it — production uses the real engine).
+		// A stubbed CLIENT: the conversation's session is pre-established (the
+		// refresh's gate) and there is no network surface.
+		const { ConversationClient } = await import("../src/honcho.js");
+		const conversation = new ConversationClient("7");
+		conversation.markEstablished(Promise.resolve({} as never));
+		const result = createHonchoMemory(harness.host as never, {
+			createClient: () =>
+				({
+					for: () => conversation,
+					drainAll: async () => {},
+				}) as never,
+		});
+		const { ExtensionStores } = await import("../src/stores.js");
+		const stores = new ExtensionStores(harness.host.stores.paths, SETTINGS);
+		await stores.writeLedger(7, {
+			conversationId: 7,
+			honchoSessionId: "sigrun-7",
+			ownerAtFirstCapture: "alice",
+			deliveredBatchIds: [],
+			anchors: [],
+		});
+
+		// Full-stub the refresh itself: the unit under test is the WORKER's
+		// wiring (which conversation, which owner) — refreshRepresentation's
+		// own behavior is covered in test/representations.test.ts.
+		const refresh = vi
+			.mocked(refreshRepresentation)
+			.mockImplementation(async () => {});
+		refresh.mockClear();
+		await result.workers?.[0]?.run(CONTEXT as never, {
+			event: "conversationIdle",
+			conversationId: 7,
+		} as never);
+
+		expect(refresh).toHaveBeenCalledTimes(1);
+		expect(refresh.mock.calls[0]?.[3]).toBe(7);
+		expect(refresh.mock.calls[0]?.[4]).toBe("alice");
+		expect(result.workerStatus?.get("honcho-representations")?.runs).toBe(1);
+	});
+
+	it("the worker skips the refresh for a conversation with no established session", async () => {
+		harness = await makeHarness({ apiKey: "sk-test" });
+		const result = createHonchoMemory(harness.host as never, {});
+		const { ExtensionStores } = await import("../src/stores.js");
+		const stores = new ExtensionStores(harness.host.stores.paths, SETTINGS);
+		await stores.writeLedger(7, {
+			conversationId: 7,
+			honchoSessionId: "sigrun-7",
+			ownerAtFirstCapture: "alice",
+			deliveredBatchIds: [],
+			anchors: [],
+		});
+
+		const refresh = vi.mocked(refreshRepresentation);
+		refresh.mockClear();
+		// Ledger present but no session was ever established (idle before the
+		// first delivery): bookkeeping only, no refresh, no failure.
+		await result.workers?.[0]?.run(CONTEXT as never, {
+			event: "conversationIdle",
+			conversationId: 7,
+		} as never);
+
+		expect(refresh).not.toHaveBeenCalled();
+		const status = result.workerStatus?.get("honcho-representations");
+		expect(status?.runs).toBe(1);
+		expect(status?.lastError).toBeUndefined();
+	});
+
+	it("the worker is a bookkeeping-only no-op for a ledger-less conversation", async () => {
+		harness = await makeHarness({ apiKey: "sk-test" });
+		const result = createHonchoMemory(harness.host as never, {
+			createEngine: harness.createEngine,
+		});
+		const refresh = vi.mocked(refreshRepresentation);
+		refresh.mockClear();
+		await result.workers?.[0]?.run(CONTEXT as never, {
+			event: "conversationArchived",
+			conversationId: 99,
+		} as never);
+		expect(refresh).not.toHaveBeenCalled();
+		expect(result.workerStatus?.get("honcho-representations")?.runs).toBe(1);
+		expect(result.workerStatus?.get("honcho-representations")?.lastError).toBeUndefined();
+	});
+
 
 	it("userDeleted only logs the departure (no data movement)", async () => {
 		harness = await makeHarness({ apiKey: "sk-test" });

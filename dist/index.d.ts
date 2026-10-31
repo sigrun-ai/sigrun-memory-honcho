@@ -14,10 +14,16 @@
  * the outbox record ALWAYS (a missing key skips only the kick; the sweeper
  * delivers later), and kicks fire-and-forget delivery. The engine is
  * constructed lazily on first use.
+ *
+ * Task 8's wiring: both prompt sections render from the representation
+ * cache (`renderMemorySection`, sync reads only); the delivery engine's
+ * `onDelivered` is the LEADING-EDGE injection point — a delivered
+ * conversation with NO cache file refreshes once; and the idle/archived
+ * worker re-refreshes from the ledger's owner.
  */
 import type { SigrunExtensionResult, SigrunHost } from "@sigrun/sigrun/extension";
 import { type HonchoSettings } from "./config.js";
-import { DeliveryEngine } from "./delivery.js";
+import { DeliveryEngine, type DeliveryHooks } from "./delivery.js";
 import { HonchoClient } from "./honcho.js";
 import { ExtensionStores } from "./stores.js";
 /** Bookkeeping the worker's run body records (Task 8 fills the real work). */
@@ -33,7 +39,7 @@ export type SigrunExtensionResultLike = SigrunExtensionResult & {
 };
 /** Test seam: replace the engine/client construction (never the stores). */
 export interface FactoryDeps {
-    createEngine?: (client: HonchoClient, stores: ExtensionStores, settings: HonchoSettings) => DeliveryEngine;
+    createEngine?: (client: HonchoClient, stores: ExtensionStores, settings: HonchoSettings, hooks: DeliveryHooks) => DeliveryEngine;
     createClient?: (settings: HonchoSettings, apiKey: string | undefined) => HonchoClient;
 }
 export declare function createHonchoMemory(host: SigrunHost, deps?: FactoryDeps): SigrunExtensionResultLike;

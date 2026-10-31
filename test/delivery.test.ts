@@ -575,6 +575,45 @@ describe("deliverPending", () => {
 		expect(delivered).toEqual([7]);
 	});
 
+	it("leading edge: absent cache at delivery triggers one refresh", async () => {
+		const harness = fakeSdk();
+		const { stores } = await makeStores();
+		let refreshes = 0;
+		const engine = makeEngine(harness, stores, {
+			onDelivered: async (conversationId: number) => {
+				if (stores.readRepresentationSync(conversationId) === undefined) {
+					refreshes += 1;
+				}
+			},
+		});
+		await engine.establish(7, "alice");
+		await stores.withOutbox(() => stores.appendOutboxRecord(record("b-leading")));
+		await engine.deliverPending(7, "alice");
+		expect(refreshes).toBe(1);
+	});
+
+	it("leading edge: a present cache skips the refresh", async () => {
+		const harness = fakeSdk();
+		const { stores } = await makeStores();
+		let refreshes = 0;
+		const engine = makeEngine(harness, stores, {
+			onDelivered: async (conversationId: number) => {
+				if (stores.readRepresentationSync(conversationId) === undefined) {
+					refreshes += 1;
+				}
+			},
+		});
+		await engine.establish(7, "alice");
+		await stores.writeRepresentation(7, {
+			userProfile: "profile",
+			projectSummary: null,
+			fetchedAt: 1_000,
+		});
+		await stores.withOutbox(() => stores.appendOutboxRecord(record("b-cached")));
+		await engine.deliverPending(7, "alice");
+		expect(refreshes).toBe(0);
+	});
+
 	it("delivers batches in file order, one addMessages call per batch", async () => {
 		const harness = fakeSdk();
 		const { stores } = await makeStores();
