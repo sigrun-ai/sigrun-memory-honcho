@@ -1,0 +1,39 @@
+# Release: thin caller over the family's reusable release workflow
+# (release workstream Task 2.2). Trusted publishing validates THIS
+# file's name (release.yml) in THIS repo — that is the OIDC trust
+# configuration, so the name must not change. permissions id-token:
+# write is the OIDC grant; no NPM_TOKEN exists anywhere.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing v<semver> tag (the guard re-checks it)"
+        required: false
+        type: string
+      dry-run:
+        description: "Run npm publish --dry-run instead of publishing"
+        required: true
+        type: boolean
+        default: false
+      ref:
+        description: "SHA to dry-run against (used only when dry-run is true)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  release:
+    uses: sigrun-ai/sigrun/.github/workflows/ext-release.yml@main
+    secrets: inherit
+    with:
+      needs-core: false
+      tag: ${{ inputs.tag || '' }}
+      dry-run: ${{ inputs.dry-run || false }}
+      dry-run-ref: ${{ inputs.ref || '' }}
