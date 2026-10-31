@@ -29,6 +29,7 @@ import { HonchoClient } from "./honcho.js";
 import { refreshRepresentation, renderMemorySection } from "./representations.js";
 import { ExtensionStores } from "./stores.js";
 import { createSweepTask, SWEEP_TASK_NAME } from "./sweep.js";
+import { createTools } from "./tools.js";
 /** This extension's registry name AND its selection-gate sentinel. */
 const EXTENSION_NAME = "@sigrun/memory-honcho";
 /** The shutdown drain deadline (spec: 25s under the host's shutdown budget). */
@@ -183,10 +184,20 @@ export function createHonchoMemory(host, deps = {}) {
     const workerStatus = new Map([
         ["honcho-representations", { runs: 0 }],
     ]);
+    // The tools need the engine, which is lazy. The extension's tools array
+    // is static, so the tools are built once (eagerly) with a lazy engine
+    // accessor: each tool's execute closure awaits the engine before its
+    // first Honcho call.
+    const tools = createTools({
+        host,
+        client: () => engineClient,
+        engine: () => engine(),
+        settings: () => engineSettings,
+    });
     return {
         extension: defineExtension({
             name: EXTENSION_NAME,
-            tools: [],
+            tools,
             sections: [
                 // Both sections render the same cache snapshot.
                 section("long-term-memory", (input) => renderMemorySectionSync(Number(input.conversationId))),

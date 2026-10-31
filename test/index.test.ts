@@ -181,7 +181,11 @@ describe("createHonchoMemory", () => {
 		});
 
 		expect(result.extension?.name).toBe("@sigrun/memory-honcho");
-		expect(result.extension?.tools).toEqual([]);
+		expect(result.extension?.tools?.map((t) => t.name)).toEqual([
+			"honcho_search",
+			"honcho_chat",
+			"honcho_remember",
+		]);
 		const tasks = result.extension?.tasks ?? [];
 		expect(
 			tasks.map(
