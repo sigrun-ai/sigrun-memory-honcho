@@ -42,6 +42,7 @@ import {
 import { DeliveryEngine, type DeliveryHooks } from "./delivery.js";
 import { HonchoClient } from "./honcho.js";
 import { refreshRepresentation, renderMemorySection } from "./representations.js";
+import { createStatusHandler } from "./status.js";
 import { ExtensionStores, type StorePaths } from "./stores.js";
 import { createSweepTask, SWEEP_TASK_NAME } from "./sweep.js";
 import { createTools } from "./tools.js";
@@ -428,9 +429,19 @@ export function createHonchoMemory(
 				method: "GET",
 				path: "status",
 				auth: "user",
-				// Stub body until Task 10.
-				handler: async () =>
-					new Response("memory-honcho: status stub\n", { status: 200 }),
+				// Display-only observability over the on-disk state. The deps
+				// resolve LIVE per request (settings/key/stores written after
+				// boot apply at the next read); the worker bookkeeping is the
+				// factory-closure map this result also exposes as
+				// `workerStatus`. No key material crosses the body —
+				// buildStatus projects the key to the `configured` boolean.
+				handler: createStatusHandler({
+					settings: () => resolveSettings(settingsStore),
+					apiKey: () => resolveApiKey(secretsStore),
+					stores,
+					workerStatus,
+					workerName: "honcho-representations",
+				}),
 			},
 		],
 

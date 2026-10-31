@@ -39,6 +39,8 @@ export declare class ExtensionStores {
      */
     withOutbox<T>(work: () => Promise<T>): Promise<T>;
     readLedger(conversationId: number): Promise<Ledger | undefined>;
+    /** Every ledger on disk (status/observability reads; missing dir → []). */
+    readLedgers(): Promise<Ledger[]>;
     readLedgerSync(conversationId: number): Ledger | undefined;
     writeLedger(conversationId: number, ledger: Ledger): Promise<void>;
     /**
@@ -51,6 +53,12 @@ export declare class ExtensionStores {
     /** Replace the outbox (atomic). Call inside `withOutbox`. */
     rewriteOutbox(records: OutboxRecord[]): Promise<void>;
     readPendingFork(childId: number): Promise<PendingForkRecord | undefined>;
+    /**
+     * Every pending-fork record on disk, resolved ones included (they are
+     * kept stamped so a late duplicate establish never re-clones; callers
+     * wanting the still-pending count filter on `resolvedAt`).
+     */
+    readPendingForks(): Promise<PendingForkRecord[]>;
     writePendingFork(record: PendingForkRecord): Promise<void>;
     /**
      * Stamp `resolvedAt` on the record (kept on disk, so a late duplicate

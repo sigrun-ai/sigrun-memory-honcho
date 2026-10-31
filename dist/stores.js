@@ -22,7 +22,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 /**
  * The module-level outbox tail: every `withOutbox` caller queues behind the
@@ -63,6 +63,10 @@ export class ExtensionStores {
     // -- ledger (state) -------------------------------------------------------
     async readLedger(conversationId) {
         return readJson(this.#ledgerPath(conversationId));
+    }
+    /** Every ledger on disk (status/observability reads; missing dir → []). */
+    async readLedgers() {
+        return readJsonDir(join(this.#paths.state, "ledger"));
     }
     readLedgerSync(conversationId) {
         return readJsonSync(this.#ledgerPath(conversationId));
@@ -117,6 +121,14 @@ export class ExtensionStores {
     async readPendingFork(childId) {
         return readJson(this.#pendingForkPath(childId));
     }
+    /**
+     * Every pending-fork record on disk, resolved ones included (they are
+     * kept stamped so a late duplicate establish never re-clones; callers
+     * wanting the still-pending count filter on `resolvedAt`).
+     */
+    async readPendingForks() {
+        return readJsonDir(join(this.#paths.state, "forks", "pending"));
+    }
     async writePendingFork(record) {
         await writeJsonAtomic(this.#pendingForkPath(record.childId), record);
     }
@@ -169,6 +181,25 @@ async function readJson(path) {
             return undefined;
         throw error;
     }
+}
+/** Parse every `*.json` file in a directory; a missing directory is empty. */
+async function readJsonDir(dir) {
+    let names;
+    try {
+        names = await readdir(dir);
+    }
+    catch (error) {
+        if (isNotFound(error))
+            return [];
+        throw error;
+    }
+    const values = [];
+    for (const name of names) {
+        if (!name.endsWith(".json"))
+            continue;
+        values.push(JSON.parse(await readFile(join(dir, name), "utf8")));
+    }
+    return values;
 }
 function readJsonSync(path) {
     try {
