@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-11-03
+
+### Fixed
+
+- Worker `endedAt` bookkeeping: the `engineClient === undefined` early
+  return inside the refresh gate skipped `status.endedAt`, leaving the
+  status route with a started-but-never-ended run. The gate now falls
+  through to the shared `endedAt` write.
+- Worker `lastError` writer cap: tested (the 500-char slice in the
+  catch block was untested).
+- Dead `#settings` field on `DeliveryEngine` removed (never read; the
+  engine resolves settings live per call site).
+- `honchoError` no longer nests the extension prefix on internal guard
+  errors (e.g. "client not initialized" already carries it).
+- Duplicate client-undefined guards in `honcho_chat` and
+  `honcho_remember` extracted to a shared `clientOrThrow` helper.
+- Missing-API-key warn-once flag is factory-scoped (was module-global,
+  which made test order observable).
+- Delivery-kick catch log aligned with the sweeper's per-conversation
+  catch shape (same prefix, conversation id, error).
+
+### Added
+
+- `makeLeadingEdgeHook` exported from `src/index.ts` — the composition
+  test uses the factory instead of re-implementing the hook body
+  verbatim (drift risk).
+- README limitation: the `honcho-representations` worker can be frozen
+  on Windows (observed in homelab deployments; the leading-edge refresh
+  and the sweep job keep the cache fresh regardless).
+- Code comment documenting the accepted duplicate-refresh window on
+  overlapping deliveries (bounded by the per-conversation chain,
+  last-write-wins, one extra refresh per conversation lifetime).
+
 ## [0.1.1] - 2026-10-31
 
 ### Fixed

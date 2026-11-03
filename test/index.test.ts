@@ -434,6 +434,43 @@ describe("createHonchoMemory", () => {
 		expect(typeof map?.get("honcho-representations")?.endedAt).toBe("number");
 	});
 
+	it("the worker records endedAt even when the engine client is undefined", async () => {
+		// THE FINDING (final-review P2): the worker's
+		// `if (engineClient === undefined) return;` early return inside the
+		// try block skips `status.endedAt = Date.now()` — the status route
+		// reports startedAt forever with no endedAt. The ledger is required
+		// to reach the gate (a ledger-less conversation falls through to the
+		// normal endedAt).
+		harness = await makeHarness({ apiKey: "sk-test" });
+		const { ExtensionStores } = await import("../src/stores.js");
+		const stores = new ExtensionStores(harness.host.stores.paths, SETTINGS);
+		await stores.writeLedger(7, {
+			conversationId: 7,
+			honchoSessionId: "sigrun-7",
+			ownerAtFirstCapture: "alice",
+			deliveredBatchIds: [],
+			anchors: [],
+		});
+
+		const result = createHonchoMemory(harness.host as never, {
+			createClient: () => undefined as never,
+		});
+		const worker = result.workers?.[0];
+		expect(worker).toBeDefined();
+
+		await worker?.run(CONTEXT, {
+			event: "conversationIdle",
+			conversationId: 7,
+		} as never);
+
+		const status = result.workerStatus?.get("honcho-representations");
+		expect(status?.runs).toBe(1);
+		expect(typeof status?.startedAt).toBe("number");
+		// The pre-fix worker returns before this line executes.
+		expect(typeof status?.endedAt).toBe("number");
+		expect(status?.lastError).toBeUndefined();
+	});
+
 	it("the worker records a failing run's last error", async () => {
 		harness = await makeHarness({ apiKey: "sk-test" });
 		const result = createHonchoMemory(harness.host as never, {
@@ -451,6 +488,31 @@ describe("createHonchoMemory", () => {
 		).rejects.toThrow();
 		const status = result.workerStatus?.get("honcho-representations");
 		expect(status?.lastError).toContain("no client");
+	});
+
+	it("the worker's failing-run lastError is capped at 500 characters (writer layer)", async () => {
+		// THE FINDING (T11 parked minor): the writer-side cap in the worker's
+		// catch block is untested — only the status route's projection cap is.
+		harness = await makeHarness({ apiKey: "sk-test" });
+		const longError = "x".repeat(1_000);
+		const result = createHonchoMemory(harness.host as never, {
+			createEngine: harness.createEngine,
+			createClient: () => {
+				throw new Error(longError);
+			},
+		});
+		const worker = result.workers?.[0];
+		await expect(
+			worker?.run(CONTEXT, {
+				event: "conversationIdle",
+				conversationId: 7,
+			} as never),
+		).rejects.toThrow();
+
+		const status = result.workerStatus?.get("honcho-representations");
+		expect(status?.lastError).toBeDefined();
+		expect(status?.lastError!.length).toBeLessThanOrEqual(500);
+		expect(status?.lastError).toBe(longError.slice(0, 500));
 	});
 
 	it("the status route stub answers a Response", async () => {

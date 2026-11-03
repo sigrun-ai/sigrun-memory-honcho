@@ -15,6 +15,15 @@
  * also updates the `state/last-delivery.json` marker in the same critical
  * section (the status route's newest-delivery read survives the sweeper's
  * delivered-record drop that way).
+ *
+ * **Accepted duplicate-refresh window (stays):** two deliveries in quick
+ * succession (e.g. a capture kick + the sweeper) can each trigger a
+ * leading-edge representation refresh when the cache is absent — the
+ * check-then-refresh in `onDelivered` is not atomic with the delivery.
+ * Bounded by the per-conversation chain (refreshes queue behind each
+ * other, never overlap); last-write-wins is safe because the refresh
+ * is idempotent (same session, same server-side state). The window is
+ * one extra refresh per conversation lifetime, at first delivery only.
  */
 
 import type { MessageInput, Peer, Session } from "@honcho-ai/sdk";
@@ -45,18 +54,19 @@ export interface DeliveryHooks {
 export class DeliveryEngine {
 	readonly #client: HonchoClient;
 	readonly #stores: ExtensionStores;
-	readonly #settings: HonchoSettings;
 	readonly #hooks: DeliveryHooks;
 
 	constructor(
 		client: HonchoClient,
 		stores: ExtensionStores,
-		settings: HonchoSettings,
+		// The settings parameter is accepted but not stored: every value the
+		// engine needs is resolved live at the call site (the factory's
+		// live-settings seam), so a stale snapshot would be a bug source.
+		_settings: HonchoSettings,
 		hooks: DeliveryHooks = {},
 	) {
 		this.#client = client;
 		this.#stores = stores;
-		this.#settings = settings;
 		this.#hooks = hooks;
 	}
 
@@ -273,8 +283,10 @@ export class DeliveryEngine {
 		void this.establish(conversationId, owner)
 			.then(() => this.deliverPending(conversationId, owner))
 			.catch((error: unknown) => {
+				// Same log shape as the sweeper's per-conversation catches —
+				// one prefix, conversation id, then the error.
 				console.error(
-					`memory-honcho: delivery kick failed for conversation ${conversationId}`,
+					`memory-honcho: delivery failed for conversation ${conversationId}`,
 					error,
 				);
 			});

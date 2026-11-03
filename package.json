@@ -1,6 +1,6 @@
 {
 	"name": "@sigrun/memory-honcho",
-	"version": "0.1.1",
+	"version": "0.1.2",
 	"description": "Honcho persistent-memory extension for sigrun (pi-durable)",
 	"type": "module",
 	"engines": {

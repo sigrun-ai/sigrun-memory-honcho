@@ -38,5 +38,21 @@ export interface FactoryDeps {
     createEngine?: (client: HonchoClient, stores: ExtensionStores, settings: HonchoSettings, hooks: DeliveryHooks) => DeliveryEngine;
     createClient?: (settings: HonchoSettings, apiKey: string | undefined) => HonchoClient;
 }
+/**
+ * The leading-edge hook: a delivered conversation whose representation
+ * cache is ABSENT refreshes once (a present cache is fresh enough — the
+ * idle worker owns re-refreshes). The delivery engine calls the hook OUT
+ * of the conversation chain, so this refresh chains behind the delivery
+ * that just settled (never a circular wait). Failures log and are
+ * swallowed: a failed refresh must never fault the delivery it rode in on.
+ *
+ * Extracted for the composition test (T8 parked minor): the test uses the
+ * same factory instead of re-implementing the body verbatim.
+ */
+export declare function makeLeadingEdgeHook(opts: {
+    readonly stores: () => Promise<ExtensionStores>;
+    readonly client: HonchoClient;
+    readonly settings: HonchoSettings;
+}): DeliveryHooks;
 export declare function createHonchoMemory(host: SigrunHost, deps?: FactoryDeps): SigrunExtensionResultLike;
 export default createHonchoMemory;

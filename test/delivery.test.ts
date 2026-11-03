@@ -609,26 +609,20 @@ describe("deliverPending", () => {
 		// chain("conversation:<id>") on the same label. Called INSIDE
 		// deliverPending's chain callback, that is a circular wait; the hook
 		// must run OUT of the chain and queue behind the settled tail.
-		// Real engine + the real factory hook wiring (verbatim) + fake SDK +
-		// the REAL refresh (only `context` stubbed on the fake session).
+		// Real engine + the real factory hook (via makeLeadingEdgeHook) +
+		// fake SDK + the REAL refresh (only `context` stubbed on the fake
+		// session).
 		const harness = fakeSdk();
 		const { stores } = await makeStores();
 		const client = new HonchoClient(SETTINGS, "synthetic-key", () => harness.sdk);
-		const { refreshRepresentation } = await import("../src/representations.js");
-		const engine = new DeliveryEngine(client, stores, SETTINGS, {
-			onDelivered: async (conversationId: number) => {
-				if (stores.readRepresentationSync(conversationId) !== undefined) return;
-				const ledger = stores.readLedgerSync(conversationId);
-				if (ledger === undefined) return;
-				await refreshRepresentation(
-					client,
-					stores,
-					SETTINGS,
-					conversationId,
-					ledger.ownerAtFirstCapture,
-				);
-			},
-		});
+		const { makeLeadingEdgeHook } = await import("../src/index.js");
+		const engine = new DeliveryEngine(client, stores, SETTINGS,
+			makeLeadingEdgeHook({
+				stores: async () => stores,
+				client,
+				settings: SETTINGS,
+			}),
+		);
 
 		await engine.establish(7, "alice");
 		await stores.withOutbox(() => stores.appendOutboxRecord(record("b-first")));
