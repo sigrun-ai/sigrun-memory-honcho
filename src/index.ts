@@ -75,15 +75,20 @@ export interface FactoryDeps {
 	) => HonchoClient;
 }
 
-/** The missing-API-key notice fires once per process, not per event. */
-let missingKeyWarned = false;
-
-function warnMissingKeyOnce(): void {
-	if (missingKeyWarned) return;
-	missingKeyWarned = true;
-	console.warn(
-		"memory-honcho: no API key (secrets 'api-key' or SIGRUN_EXT_MEMORY_HONCHO_API_KEY) — capturing to the outbox without delivery",
-	);
+/**
+ * The missing-API-key notice fires once per FACTORY INSTANCE, not per
+ * event. Factory-scoped (not module-global) so tests that create multiple
+ * instances in any order each see the warning.
+ */
+function createWarnMissingKeyOnce(): () => void {
+	let warned = false;
+	return () => {
+		if (warned) return;
+		warned = true;
+		console.warn(
+			"memory-honcho: no API key (secrets 'api-key' or SIGRUN_EXT_MEMORY_HONCHO_API_KEY) — capturing to the outbox without delivery",
+		);
+	};
 }
 
 /**
@@ -106,6 +111,46 @@ function settingsEqual(a: HonchoSettings, b: HonchoSettings): boolean {
 	);
 }
 
+/**
+ * The leading-edge hook: a delivered conversation whose representation
+ * cache is ABSENT refreshes once (a present cache is fresh enough — the
+ * idle worker owns re-refreshes). The delivery engine calls the hook OUT
+ * of the conversation chain, so this refresh chains behind the delivery
+ * that just settled (never a circular wait). Failures log and are
+ * swallowed: a failed refresh must never fault the delivery it rode in on.
+ *
+ * Extracted for the composition test (T8 parked minor): the test uses the
+ * same factory instead of re-implementing the body verbatim.
+ */
+export function makeLeadingEdgeHook(opts: {
+	readonly stores: () => Promise<ExtensionStores>;
+	readonly client: HonchoClient;
+	readonly settings: HonchoSettings;
+}): DeliveryHooks {
+	return {
+		onDelivered: async (conversationId) => {
+			const store = await opts.stores();
+			if (store.readRepresentationSync(conversationId) !== undefined) return;
+			const ledger = store.readLedgerSync(conversationId);
+			if (ledger === undefined) return;
+			try {
+				await refreshRepresentation(
+					opts.client,
+					store,
+					opts.settings,
+					conversationId,
+					ledger.ownerAtFirstCapture,
+				);
+			} catch (error) {
+				console.error(
+					`memory-honcho: leading-edge representation refresh failed for conversation ${conversationId}`,
+					error,
+				);
+			}
+		},
+	};
+}
+
 export function createHonchoMemory(
 	host: SigrunHost,
 	deps: FactoryDeps = {},
@@ -113,6 +158,7 @@ export function createHonchoMemory(
 	const settingsStore: SettingsReader = host.stores.settings;
 	const secretsStore: SecretsReader = host.stores.secrets;
 	const paths: StorePaths = host.stores.paths;
+	const warnMissingKeyOnce = createWarnMissingKeyOnce();
 
 	// Lazily constructed on first use — settings/key are resolved at that
 	// moment, so configuration written after boot still applies.
@@ -186,28 +232,11 @@ export function createHonchoMemory(
 			// so this refresh chains behind the delivery that just settled
 			// (never a circular wait). Failures log and are swallowed: a
 			// failed refresh must never fault the delivery it rode in on.
-			const hooks: DeliveryHooks = {
-				onDelivered: async (conversationId) => {
-					const store = await stores();
-					if (store.readRepresentationSync(conversationId) !== undefined) return;
-					const ledger = store.readLedgerSync(conversationId);
-					if (ledger === undefined) return;
-					try {
-						await refreshRepresentation(
-							client,
-							store,
-							settings,
-							conversationId,
-							ledger.ownerAtFirstCapture,
-						);
-					} catch (error) {
-						console.error(
-							`memory-honcho: leading-edge representation refresh failed for conversation ${conversationId}`,
-							error,
-						);
-					}
-				},
-			};
+			const hooks = makeLeadingEdgeHook({
+				stores,
+				client,
+				settings,
+			});
 			return (deps.createEngine ?? ((c, st, s, h) => new DeliveryEngine(c, st, s, h)))(
 				client,
 				await stores(),
@@ -381,18 +410,19 @@ export function createHonchoMemory(
 									// snapshot; skip quietly. `engineClient` is set
 									// alongside the engine the `instanceof` check
 									// just confirmed.
-									if (engineClient === undefined) return;
-									const conversation = engineClient.for(
-										String(conversationId),
-									);
-									if (conversation.hasSession()) {
-										await refreshRepresentation(
-											engineClient,
-											store,
-											engineSettings,
-											conversationId,
-											ledger.ownerAtFirstCapture,
+									if (engineClient !== undefined) {
+										const conversation = engineClient.for(
+											String(conversationId),
 										);
+										if (conversation.hasSession()) {
+											await refreshRepresentation(
+												engineClient,
+												store,
+												engineSettings,
+												conversationId,
+												ledger.ownerAtFirstCapture,
+											);
+										}
 									}
 								}
 							}

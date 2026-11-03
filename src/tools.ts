@@ -45,6 +45,9 @@ export interface ToolsDeps {
 /** Wrap a Honcho failure with the extension's error prefix. */
 function honchoError(error: unknown): Error {
 	const message = error instanceof Error ? error.message : String(error);
+	// Internal guard errors already carry the extension prefix; wrapping
+	// them again would nest it.
+	if (message.startsWith("memory-honcho: ")) return new Error(message);
 	return new Error(`memory-honcho: Honcho unavailable (${message})`);
 }
 
@@ -64,16 +67,26 @@ export function createTools(deps: ToolsDeps): readonly ToolRegistration[] {
 		return owner;
 	}
 
-	/** Establish the session, then resolve the user peer. */
-	async function userPeer(conversationId: number): Promise<Peer> {
+/** Establish the session, then resolve the user peer. */
+async function userPeer(conversationId: number): Promise<Peer> {
 		const owner = await resolveOwner(conversationId);
 		await deps.engine().then((engine) => engine.establish(conversationId, owner));
+		return clientOrThrow().userPeerFor(owner);
+}
+
+/** The agent peer, after the client is guaranteed. */
+async function agentPeer(): Promise<Peer> {
+		return clientOrThrow().agentPeer();
+}
+
+/** The client, or a clean error (the factory wires a live accessor). */
+function clientOrThrow(): HonchoClient {
 		const client = deps.client();
 		if (client === undefined) {
 			throw new Error("memory-honcho: client not initialized");
 		}
-		return client.userPeerFor(owner);
-	}
+		return client;
+}
 
 	/** Settings after the engine has resolved (guaranteed initialized). */
 	function currentSettings(): HonchoSettings {
@@ -145,12 +158,8 @@ export function createTools(deps: ToolsDeps): readonly ToolRegistration[] {
 			try {
 				const conversationId = Number(api.conversationId);
 				const targetPeer = await userPeer(conversationId);
-				const client = deps.client();
-				if (client === undefined) {
-					throw new Error("memory-honcho: client not initialized");
-				}
-				const agentPeer = await client.agentPeer();
-				const answer = await agentPeer.chat(args.query, {
+				const agent = await agentPeer();
+				const answer = await agent.chat(args.query, {
 					target: targetPeer,
 					reasoningLevel: args.reasoningLevel ?? "low",
 				});
@@ -177,12 +186,8 @@ export function createTools(deps: ToolsDeps): readonly ToolRegistration[] {
 			try {
 				const conversationId = Number(api.conversationId);
 				const targetPeer = await userPeer(conversationId);
-				const client = deps.client();
-				if (client === undefined) {
-					throw new Error("memory-honcho: client not initialized");
-				}
-				const agentPeer = await client.agentPeer();
-				await agentPeer.conclusionsOf(targetPeer).create({
+				const agent = await agentPeer();
+				await agent.conclusionsOf(targetPeer).create({
 					content: args.content,
 				});
 				return {

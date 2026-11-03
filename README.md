@@ -91,6 +91,7 @@ A sigrun fork writes a durable pending-fork record (zero network); the child's f
 - **Queue-overflow capture loss (accepted, host posture):** under host event-queue overflow the oldest queued event is dropped — a dropped settle is a run the extension never sees, so its capture batch is permanently lost (the outbox cannot recover an event it never received).
 - **Clone duplicate window (accepted):** a clone that succeeds server-side but crashes before the ledger write retries into a duplicate full-history session — rare, bounded to one duplicate per crash, and non-corrupting (the ledger points at exactly one session); the status route's session count makes duplicates operator-visible.
 - **Jobs-posture caveat:** a task-action job whose run dies un-settled (harness close mid-run) leaves the host's job-run record `running` until restart — the host has no staleness sweep; this extension's sweeper is exposed to it like every task-action job.
+- **Windows: the `honcho-representations` worker can be frozen.** On Windows, the host's worker scheduling can leave a wake-only worker idle even when conversations are idle/archived (observed in homelab deployments; mechanism not yet root-caused). The representation cache stays fresh through the leading-edge refresh at delivery and the `outbox-sweep` job's deliveries — the worker's idle-wake refresh is a convenience, not the only lane.
 
 ## Development
 

@@ -15,6 +15,15 @@
  * also updates the `state/last-delivery.json` marker in the same critical
  * section (the status route's newest-delivery read survives the sweeper's
  * delivered-record drop that way).
+ *
+ * **Accepted duplicate-refresh window (stays):** two deliveries in quick
+ * succession (e.g. a capture kick + the sweeper) can each trigger a
+ * leading-edge representation refresh when the cache is absent — the
+ * check-then-refresh in `onDelivered` is not atomic with the delivery.
+ * Bounded by the per-conversation chain (refreshes queue behind each
+ * other, never overlap); last-write-wins is safe because the refresh
+ * is idempotent (same session, same server-side state). The window is
+ * one extra refresh per conversation lifetime, at first delivery only.
  */
 import { pickCloneAnchor } from "./fork-rules.js";
 /** The session configuration applied on get-or-create AND on clones. */
@@ -25,12 +34,14 @@ const SESSION_CONFIGURATION = {
 export class DeliveryEngine {
     #client;
     #stores;
-    #settings;
     #hooks;
-    constructor(client, stores, settings, hooks = {}) {
+    constructor(client, stores, 
+    // The settings parameter is accepted but not stored: every value the
+    // engine needs is resolved live at the call site (the factory's
+    // live-settings seam), so a stale snapshot would be a bug source.
+    _settings, hooks = {}) {
         this.#client = client;
         this.#stores = stores;
-        this.#settings = settings;
         this.#hooks = hooks;
     }
     /**
@@ -227,7 +238,9 @@ export class DeliveryEngine {
         void this.establish(conversationId, owner)
             .then(() => this.deliverPending(conversationId, owner))
             .catch((error) => {
-            console.error(`memory-honcho: delivery kick failed for conversation ${conversationId}`, error);
+            // Same log shape as the sweeper's per-conversation catches —
+            // one prefix, conversation id, then the error.
+            console.error(`memory-honcho: delivery failed for conversation ${conversationId}`, error);
         });
     }
     /** Get-or-create `sigrun-<id>` with the per-peer observe config. */

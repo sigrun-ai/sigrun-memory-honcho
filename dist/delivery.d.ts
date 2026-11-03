@@ -15,6 +15,15 @@
  * also updates the `state/last-delivery.json` marker in the same critical
  * section (the status route's newest-delivery read survives the sweeper's
  * delivered-record drop that way).
+ *
+ * **Accepted duplicate-refresh window (stays):** two deliveries in quick
+ * succession (e.g. a capture kick + the sweeper) can each trigger a
+ * leading-edge representation refresh when the cache is absent — the
+ * check-then-refresh in `onDelivered` is not atomic with the delivery.
+ * Bounded by the per-conversation chain (refreshes queue behind each
+ * other, never overlap); last-write-wins is safe because the refresh
+ * is idempotent (same session, same server-side state). The window is
+ * one extra refresh per conversation lifetime, at first delivery only.
  */
 import type { HonchoSettings } from "./config.js";
 import type { HonchoClient } from "./honcho.js";
@@ -31,7 +40,7 @@ export interface DeliveryHooks {
 }
 export declare class DeliveryEngine {
     #private;
-    constructor(client: HonchoClient, stores: ExtensionStores, settings: HonchoSettings, hooks?: DeliveryHooks);
+    constructor(client: HonchoClient, stores: ExtensionStores, _settings: HonchoSettings, hooks?: DeliveryHooks);
     /**
      * Establish the conversation's Honcho session: plain get-or-create, or
      * a clone-with-mapping when a pending-fork record points at a parent
