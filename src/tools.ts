@@ -69,23 +69,23 @@ export function createTools(deps: ToolsDeps): readonly ToolRegistration[] {
 
 /** Establish the session, then resolve the user peer. */
 async function userPeer(conversationId: number): Promise<Peer> {
-		const owner = await resolveOwner(conversationId);
-		await deps.engine().then((engine) => engine.establish(conversationId, owner));
-		return clientOrThrow().userPeerFor(owner);
+	const owner = await resolveOwner(conversationId);
+	await deps.engine().then((engine) => engine.establish(conversationId, owner));
+	return clientOrThrow().userPeerFor(owner);
 }
 
 /** The agent peer, after the client is guaranteed. */
 async function agentPeer(): Promise<Peer> {
-		return clientOrThrow().agentPeer();
+	return clientOrThrow().agentPeer();
 }
 
 /** The client, or a clean error (the factory wires a live accessor). */
 function clientOrThrow(): HonchoClient {
-		const client = deps.client();
-		if (client === undefined) {
-			throw new Error("memory-honcho: client not initialized");
-		}
-		return client;
+	const client = deps.client();
+	if (client === undefined) {
+		throw new Error("memory-honcho: client not initialized");
+	}
+	return client;
 }
 
 	/** Settings after the engine has resolved (guaranteed initialized). */
