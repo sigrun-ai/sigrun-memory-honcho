@@ -13,7 +13,7 @@
  * The README documents the visibility caveat.
  */
 
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import type { Peer } from "@honcho-ai/sdk";

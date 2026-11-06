@@ -12,7 +12,7 @@
  * user-level conclusion, matching the cross-conversation recall ruling.
  * The README documents the visibility caveat.
  */
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { defineTool } from "@earendil-works/pi-durable";
 /** The no-memory text returned by search (empty) and chat (null). */
 const NO_MEMORY_TEXT = "No relevant memory found.";
