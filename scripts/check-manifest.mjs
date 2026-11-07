@@ -62,28 +62,25 @@ check(typeof manifest.bugs?.url === "string", "package.json: bugs.url absent");
 check(typeof manifest.homepage === "string", "package.json: homepage absent");
 
 /** Every host module a sigrun extension/provider imports must be a peer.
- * The @earendil-works host modules ship 1.3.0 with sigrun 0.1.0; peers
- * also accept 1.4.0 (forward-compat). Phase 2 develops against
- * the 1.4.0 host family (DEV_PIN_OVERRIDES below), keeping one
+ * The family develops against the pi-durable 1.5.0 host family
+ * (peers accept ~1.5.0; devDeps pin 1.5.0 exactly), keeping one
  * type-compatible copy of chord/pi-ai/pi-durable.
- * typebox is pi-ai 1.3.0's own exact dependency (1.3.27) — the
+ * typebox is pi-ai's own exact dependency (1.3.27) — the
  * host-linked single copy extensions see. */
 const HOST_MODULE_PINS = {
-	"@earendil-works/pi-durable": "1.3.0",
-	"@earendil-works/pi-ai": "1.3.0",
-	"@earendil-works/chord": "1.3.0",
-	"@earendil-works/pi-codemode": "1.3.0",
+	"@earendil-works/pi-durable": "~1.5.0",
+	"@earendil-works/pi-ai": "~1.5.0",
+	"@earendil-works/chord": "~1.5.0",
+	"@earendil-works/pi-codemode": "~1.5.0",
 	typebox: "1.3.27",
 };
-/** Phase 2 (core 0.3.0): development happens against pi-durable 1.4.0;
- * the peer keeps the widened "1.3.0 || 1.4.0" acceptance above. */
+/** Development happens against pi-durable 1.5.0 (exact). */
 const DEV_PIN_OVERRIDES = {
-	"@earendil-works/chord": "1.4.0",
-	"@earendil-works/pi-ai": "1.4.0",
-	"@earendil-works/pi-codemode": "1.4.0",
-	"@earendil-works/pi-durable": "1.4.0",
+	"@earendil-works/chord": "1.5.0",
+	"@earendil-works/pi-ai": "1.5.0",
+	"@earendil-works/pi-codemode": "1.5.0",
+	"@earendil-works/pi-durable": "1.5.0",
 };
-const PEER_FORWARD_COMPAT = " || 1.4.0";
 const peers = manifest.peerDependencies ?? {};
 const devDeps = manifest.devDependencies ?? {};
 for (const [module, spec] of Object.entries(peers)) {
@@ -93,8 +90,8 @@ for (const [module, spec] of Object.entries(peers)) {
 	);
 	const pin = HOST_MODULE_PINS[module];
 	check(
-		spec === pin || (module.startsWith("@earendil-works/") && spec === `${pin}${PEER_FORWARD_COMPAT}`),
-		`package.json: peerDependencies["${module}"] must be exact "${pin}" or "${pin}${PEER_FORWARD_COMPAT}" for @earendil-works host modules (got ${JSON.stringify(spec)})`,
+		spec === pin,
+		`package.json: peerDependencies["${module}"] must be exactly "${pin}" (the 1.5.0-era peers are ranges) (got ${JSON.stringify(spec)})`,
 	);
 	const devPin = DEV_PIN_OVERRIDES[module] ?? pin;
 	check(
