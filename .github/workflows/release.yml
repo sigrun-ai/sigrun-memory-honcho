@@ -33,7 +33,7 @@ jobs:
     uses: sigrun-ai/sigrun/.github/workflows/ext-release.yml@main
     secrets: inherit
     with:
-      needs-core: false
+      needs-core: true
       tag: ${{ inputs.tag || '' }}
       dry-run: ${{ inputs.dry-run || false }}
       dry-run-ref: ${{ inputs.ref || '' }}

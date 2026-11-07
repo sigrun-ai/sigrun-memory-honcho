@@ -1,6 +1,6 @@
 # CI: thin caller over the family's reusable workflow in sigrun-ai/sigrun
 # (release workstream Task 2.2) — the jobs live there so they cannot
-# drift across the 10 repos. needs-core: false (no file: sibling dev deps).
+# drift across the 10 repos. needs-core: true (the @sigrun/sigrun file: sibling dev dep).
 name: ci
 
 on:
@@ -15,4 +15,4 @@ jobs:
   test:
     uses: sigrun-ai/sigrun/.github/workflows/ext-ci.yml@main
     with:
-      needs-core: false
+      needs-core: true
