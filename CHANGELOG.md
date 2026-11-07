@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.3] - 2026-11-07
 
+## [0.1.4] - 2026-11-07
+
+- CI: needs-core true (the release tag corrects the 0.1.3 workflow miss; no code change from 0.1.3).
+
 ## [Unreleased]
 
 ### Changed
