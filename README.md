@@ -65,6 +65,12 @@ A sigrun fork writes a durable pending-fork record (zero network); the child's f
 
 **Fork precondition:** the pending-fork record must exist when the child first captures — a conversation forked **before** this extension was loaded has no record and starts a fresh session (no history).
 
+## Honcho view
+
+The read-only **Honcho** view shows the calling user's own peer card and conclusions. The **Card** page groups the peer card and summarizes conclusion levels; **Conclusions** provides server-side level, text, semantic, date, session and observer filters with 50-row pages. Searches live in the view params, so they are bookmarkable.
+
+Selecting a conclusion opens its full fields, linked premises (or supporting/conflicting conclusions), conclusions derived from it, and citations for explicit conclusions. Premise and used-by rows drill into further conclusions with Back navigation. At most 10 cited messages are fetched concurrently; message bodies wrap and cap at 2,000 characters. Missing premises or citations are counted without hiding the records that remain. The view never writes to Honcho, never exposes the API key to clients, and renders fetch failures as callouts.
+
 ## Jobs and worker
 
 - **Cron job `outbox-sweep`** (`*/15 * * * *`) — the delivery engine of record: resolves pending forks, delivers each conversation's pending records, then compacts (delivered records are dropped; pending records older than `outboxRetentionDays` are dropped with a warning per record). The sweep keeps working when Honcho is down — failures are per-conversation and the next sweep retries.

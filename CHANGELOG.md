@@ -11,7 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - CI: needs-core true (the release tag corrects the 0.1.3 workflow miss; no code change from 0.1.3).
 
-## [Unreleased]
+## [0.1.5] - 2026-11-07
+
+### Added
+
+- Read-only Honcho view: peer card and filterable conclusions explorer,
+  plus conclusion detail with linked premises, used-by conclusions and
+  explicit-message citations. Selection history supports premise drill-in
+  and Back; missing sources and citation caps are reported inline.
 
 ### Changed
 

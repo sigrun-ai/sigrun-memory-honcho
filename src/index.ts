@@ -43,12 +43,15 @@ import {
 } from "./config.js";
 import { DeliveryEngine, type DeliveryHooks } from "./delivery.js";
 import { HonchoClient } from "./honcho.js";
+import { createHonchoReader } from "./honcho-read.js";
+import type { HonchoReader } from "./honcho-read.js";
 import { refreshRepresentation, renderMemorySection } from "./representations.js";
 import { createStatusHandler } from "./status.js";
 import { ExtensionStores, type StorePaths } from "./stores.js";
 import { createSweepTask, SWEEP_TASK_NAME } from "./sweep.js";
 import { createTools } from "./tools.js";
 import type { RunSettledEventLike, WorkerRunStatus } from "./types.js";
+import { createHonchoView } from "./view.js";
 
 /** This extension's registry name AND its selection-gate sentinel. */
 const EXTENSION_NAME = "@sigrun/memory-honcho";
@@ -73,6 +76,12 @@ export interface FactoryDeps {
 		settings: HonchoSettings,
 		apiKey: string | undefined,
 	) => HonchoClient;
+	/** The view's reader (default: a fresh `createHonchoReader` per render,
+	 *  built from LIVE settings + key so stored settings win without restart). */
+	createReader?: (
+		settings: HonchoSettings,
+		apiKey: string | undefined,
+	) => HonchoReader;
 }
 
 /**
@@ -307,6 +316,23 @@ export function createHonchoMemory(
 		settings: () => engineSettings,
 	});
 
+	// The read-only Honcho view (Task 3): the reader is built per render
+	// from FRESH settings + key, so settings written after boot apply at
+	// the next render without a restart.
+	const view = createHonchoView({
+		host,
+		reader:
+			deps.createReader ??
+			((s, key) =>
+				createHonchoReader({
+					baseUrl: s.baseUrl ?? process.env.HONCHO_URL ?? "https://api.honcho.dev",
+					workspaceId: s.workspaceId,
+					...(key === undefined ? {} : { apiKey: key }),
+				})),
+		settings: () => resolveSettings(settingsStore),
+		apiKey: () => resolveApiKey(secretsStore),
+	});
+
 	return {
 		extension: defineExtension({
 			name: EXTENSION_NAME,
@@ -450,6 +476,8 @@ export function createHonchoMemory(
 				action: { kind: "task", task: SWEEP_TASK_NAME },
 			},
 		],
+
+		surfaces: { views: [view] },
 
 		routes: [
 			{

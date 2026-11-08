@@ -27,6 +27,7 @@ import type { SigrunExtensionResult, SigrunHost } from "@sigrun/sigrun/extension
 import { type HonchoSettings } from "./config.js";
 import { DeliveryEngine, type DeliveryHooks } from "./delivery.js";
 import { HonchoClient } from "./honcho.js";
+import type { HonchoReader } from "./honcho-read.js";
 import { ExtensionStores } from "./stores.js";
 import type { WorkerRunStatus } from "./types.js";
 /** The factory result, plus the worker bookkeeping Task 8 reports from. */
@@ -37,6 +38,9 @@ export type SigrunExtensionResultLike = SigrunExtensionResult & {
 export interface FactoryDeps {
     createEngine?: (client: HonchoClient, stores: ExtensionStores, settings: HonchoSettings, hooks: DeliveryHooks) => DeliveryEngine;
     createClient?: (settings: HonchoSettings, apiKey: string | undefined) => HonchoClient;
+    /** The view's reader (default: a fresh `createHonchoReader` per render,
+     *  built from LIVE settings + key so stored settings win without restart). */
+    createReader?: (settings: HonchoSettings, apiKey: string | undefined) => HonchoReader;
 }
 /**
  * The leading-edge hook: a delivered conversation whose representation
