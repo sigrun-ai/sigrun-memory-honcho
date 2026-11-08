@@ -1,7 +1,7 @@
 /**
- * The Honcho view tests (`src/view.ts`, Task 3: card page + conclusions
- * explorer): a read-only, per-principal view over the caller's OWN Honcho
- * peer (`sanitize(principal.user)`).
+ * The Honcho view tests (`src/view.ts`, Tasks 3–4: card page, conclusions
+ * explorer and conclusion detail): a read-only, per-principal view over the
+ * caller's OWN Honcho peer (`sanitize(principal.user)`).
  *
  * The contract under test:
  *
@@ -30,7 +30,7 @@
  * https://honcho.example.invalid, fake key sk-test-view-key.
  */
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import type {
 	Principal,
 	SurfaceContext,
@@ -163,6 +163,8 @@ class FakeReader {
 	byIdsImpl?: (ids: readonly string[]) => readonly ConclusionRow[];
 	messages: Readonly<Record<string, { id: string; peerId: string; content: string; createdAt: string } | undefined>> = {};
 	messageOrder: string[] = [];
+	messageResolutionOrder: string[] = [];
+	messageGate?: Promise<void>;
 	listImpl?: (
 		filters: Record<string, unknown>,
 		opts: { page: number; size: number; reverse: boolean; signal?: AbortSignal },
@@ -188,6 +190,8 @@ class FakeReader {
 	): Promise<{ id: string; peerId: string; content: string; createdAt: string } | undefined> {
 		this.record("message", [sessionId, messageId, signal]);
 		this.messageOrder = [...this.messageOrder, messageId];
+		await this.messageGate;
+		this.messageResolutionOrder.push(messageId);
 		return this.messages[messageId];
 	}
 
@@ -871,15 +875,24 @@ describe("the Honcho view — conclusion detail", () => {
 			},
 			m2: undefined,
 		};
+		let releaseMessages!: () => void;
+		reader.messageGate = new Promise<void>((resolve) => { releaseMessages = resolve; });
 		const view = viewOf(reader);
-		const rendered = await view.render(ctxOf(ALICE, detailParams()));
+		const renderPromise = view.render(ctxOf(ALICE, detailParams()));
+		// A serial implementation records m1 and waits forever for its gated
+		// response before recording m2, so this wait fails instead of passing.
+		await vi.waitFor(() => {
+			expect(reader.messageOrder).toEqual(["m1", "m2"]);
+		});
+		expect(reader.messageResolutionOrder).toEqual([]);
+		releaseMessages();
+		const rendered = await renderPromise;
 		expectValidTree(rendered.tree, view);
 		expect(reader.callsOf("message").map((call) => call.args.slice(0, 2))).toEqual([
 			["s1", "m1"],
 			["s1", "m2"],
 		]);
-		// Both fetches are started before either response resolves.
-		expect(reader.messageOrder).toEqual(["m1", "m2"]);
+		expect(reader.messageResolutionOrder).toEqual(["m1", "m2"]);
 		const text = JSON.stringify(rendered.tree);
 		expect(text).toContain("first cited body");
 		expect(text).toContain("1 cited message is no longer available.");
@@ -948,6 +961,51 @@ describe("the Honcho view — conclusion detail", () => {
 		expect(JSON.stringify(rendered.tree)).toContain(
 			"Citations were not recorded for conclusions derived before 2026-11-07.",
 		);
+	});
+
+	test("foreign conclusions and linked rows are hidden from the caller's peer", async () => {
+		const reader = new FakeReader();
+		reader.byIdsImpl = (ids) => JSON.stringify(ids) === JSON.stringify(["foreign"])
+			? [conclusionRow("foreign", { observedId: BOB, content: "Bob's private conclusion" })]
+			: [];
+		const view = viewOf(reader);
+		const foreign = await view.render(ctxOf(ALICE, detailParams("foreign")));
+		expectValidTree(foreign.tree, view);
+		const foreignRoot = foreign.tree.root as { empty?: { title: string } };
+		expect(foreignRoot.empty?.title).toBe("Conclusion not found");
+		expect(JSON.stringify(foreign.tree)).not.toContain("Bob's private conclusion");
+		expect(reader.callsOf("list")).toHaveLength(0);
+		expect(reader.callsOf("message")).toHaveLength(0);
+
+		reader.byIdsImpl = (ids) => JSON.stringify(ids) === JSON.stringify(["c1"])
+			? [conclusionRow("c1", { level: "deductive", sourceIds: ["p1", "p2", "p3"] })]
+			: [conclusionRow("p1"), conclusionRow("p2", { observedId: BOB })];
+		reader.listImpl = () => conclusionPage([
+			conclusionRow("used-alice"),
+			conclusionRow("used-bob", { observedId: BOB }),
+		]);
+		const linked = await view.render(ctxOf(ALICE, detailParams()));
+		expectValidTree(linked.tree, view);
+		const text = JSON.stringify(linked.tree);
+		expect(text).toContain('"id":"p1"');
+		expect(text).toContain('"id":"used-alice"');
+		expect(text).not.toContain('"id":"p2"');
+		expect(text).not.toContain('"id":"used-bob"');
+		// The foreign p2 and the unresolved p3 both count as unavailable.
+		expect(text).toContain("2 source conclusions are no longer available.");
+	});
+
+	test("a non-empty source list with an unrecognized level uses a neutral title", async () => {
+		const reader = new FakeReader();
+		reader.byIdRows = [
+			conclusionRow("c1", { sourceIds: ["p1"] }),
+			conclusionRow("p1"),
+		];
+		const view = viewOf(reader);
+		const rendered = await view.render(ctxOf(ALICE, detailParams()));
+		expectValidTree(rendered.tree, view);
+		expect(JSON.stringify(rendered.tree)).toContain('"title":"Linked conclusions"');
+		expect(JSON.stringify(rendered.tree)).not.toContain('"title":"Conflicting conclusions"');
 	});
 
 	test("selected id not found renders an empty detail with Back", async () => {

@@ -349,11 +349,12 @@ export function createHonchoView(deps) {
         };
     }
     /** The selected conclusion's data: the row, premises, used-by and citations. */
-    async function detailData(ctx, params) {
+    async function detailData(ctx, peer, params) {
         const reader = deps.reader(await deps.settings(), await deps.apiKey());
         const signal = fetchSignal(ctx);
         const selected = await attempt(() => reader.byIds([params.selected], signal));
-        const conclusion = "value" in selected ? selected.value[0] : undefined;
+        const candidate = "value" in selected ? selected.value[0] : undefined;
+        const conclusion = candidate?.observedId === peer ? candidate : undefined;
         if ("error" in selected || conclusion === undefined)
             return { selected, params };
         const [premises, usedBy] = await Promise.all([
@@ -369,6 +370,15 @@ export function createHonchoView(deps) {
         }
         return { selected, params, conclusion, premises, usedBy, citations };
     }
+    /** The level-specific premise title; unknown levels stay neutral. */
+    function premiseTitle(level) {
+        switch (level) {
+            case "deductive": return "Premises";
+            case "inductive": return "Supporting observations";
+            case "contradiction": return "Conflicting conclusions";
+            default: return "Linked conclusions";
+        }
+    }
     /** One linked conclusion list (premises or used-by). */
     function conclusionCollection(id, rows) {
         return {
@@ -381,7 +391,7 @@ export function createHonchoView(deps) {
         };
     }
     /** The selected conclusion's tree (the results collection is absent). */
-    function detailTree(data) {
+    function detailTree(peer, data) {
         const params = data.params;
         const backParams = {
             ...params,
@@ -426,6 +436,13 @@ export function createHonchoView(deps) {
             ? citations.value
             : [];
         const missingCitations = citationRows.filter((message) => message === undefined).length;
+        const premiseRows = "value" in premises
+            ? premises.value.filter((row) => row.observedId === peer)
+            : [];
+        const missingPremises = conclusion.sourceIds.length - premiseRows.length;
+        const usedByRows = "value" in usedBy
+            ? usedBy.value.items.filter((row) => row.observedId === peer)
+            : [];
         return {
             v: 1,
             root: {
@@ -464,32 +481,28 @@ export function createHonchoView(deps) {
                         : [{
                                 type: "section",
                                 id: "premises-section",
-                                title: conclusion.level === "deductive"
-                                    ? "Premises"
-                                    : conclusion.level === "inductive"
-                                        ? "Supporting observations"
-                                        : "Conflicting conclusions",
+                                title: premiseTitle(conclusion.level),
                                 children: [
                                     ...("error" in premises
                                         ? [errorCallout("premises-error", premises.error)]
                                         : [
-                                            conclusionCollection("premises", premises.value),
-                                            ...(conclusion.sourceIds.length - premises.value.length > 0
+                                            conclusionCollection("premises", premiseRows),
+                                            ...(missingPremises > 0
                                                 ? [{
                                                         type: "markdown",
                                                         id: "premises-missing",
-                                                        text: `${conclusion.sourceIds.length - premises.value.length} source conclusion${conclusion.sourceIds.length - premises.value.length === 1 ? " is" : "s are"} no longer available.`,
+                                                        text: `${missingPremises} source conclusion${missingPremises === 1 ? " is" : "s are"} no longer available.`,
                                                     }]
                                                 : []),
                                         ]),
                                 ],
                             }]),
-                    ...("value" in usedBy && usedBy.value.items.length > 0
+                    ...(usedByRows.length > 0
                         ? [{
                                 type: "section",
                                 id: "used-by-section",
                                 title: "Used by",
-                                children: [conclusionCollection("used-by", usedBy.value.items)],
+                                children: [conclusionCollection("used-by", usedByRows)],
                             }]
                         : "error" in usedBy
                             ? [errorCallout("used-by-error", usedBy.error)]
@@ -759,8 +772,8 @@ export function createHonchoView(deps) {
             const params = parseViewParams(ctx.params);
             if (params.page === "conclusions") {
                 if (params.selected !== "") {
-                    const data = await detailData(ctx, params);
-                    return { tree: detailTree(data), data: {}, access: "write" };
+                    const data = await detailData(ctx, who.peer, params);
+                    return { tree: detailTree(who.peer, data), data: {}, access: "write" };
                 }
                 const data = await conclusionsData(ctx, who.peer, params);
                 return {
