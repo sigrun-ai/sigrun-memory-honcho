@@ -362,10 +362,23 @@ export function createHonchoView(deps: HonchoViewDeps): SurfaceDef<"view"> {
 							},
 						}
 					: {}),
-				main: [
-					// The peer card, grouped by prefix.
-					data.cardError !== undefined
-						? errorCallout("card-error", data.cardError)
+			main: [
+				// The peer card, grouped by prefix. On the EMPTY path main's
+				// first block is a COLLECTION bound to /card: both clients'
+				// isMainEmpty (webui Page.tsx, tui page.ts) honours page.empty
+				// ONLY when the first collection's items binding resolves to a
+				// missing/null/empty array — without it the empty state never
+				// renders and the peer gets a normal page.
+				data.cardError !== undefined
+					? errorCallout("card-error", data.cardError)
+					: empty
+						? {
+								type: "collection" as const,
+								id: "peer-card",
+								display: "list" as const,
+								items: { $: "/card" },
+								item: { title: { $: "./group" } },
+							}
 						: {
 								type: "section" as const,
 								id: "peer-card",

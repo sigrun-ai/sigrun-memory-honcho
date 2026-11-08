@@ -351,6 +351,20 @@ describe("the Honcho view — card page", () => {
 		// No error callout on the empty path (the level-shortcut callout is
 		// neutral, not an error).
 		expect(text).not.toContain('"tone":"bad"');
+
+		// The MECHANISM both clients honour (webui Page.tsx isMainEmpty /
+		// tui page.ts isMainEmpty): main's FIRST block is a collection whose
+		// items is a {$} BINDING resolving to an empty array in the data
+		// document. Without that binding, page.empty never renders and the
+		// peer gets a normal page instead.
+		const root = rendered.tree.root as {
+			empty?: unknown;
+			main: readonly { type: string; items?: unknown }[];
+		};
+		expect(root.empty).toBeDefined();
+		expect(root.main[0]?.type).toBe("collection");
+		expect(root.main[0]?.items).toEqual({ $: "/card" });
+		expect((rendered.data as { card: unknown }).card).toEqual([]);
 	});
 });
 
@@ -417,11 +431,49 @@ describe("the Honcho view — conclusions page", () => {
 		const reader = new FakeReader();
 		reader.listPage = conclusionPage([conclusionRow("c2")], 100, 2);
 		const view = viewOf(reader);
-		await view.render(ctxOf(ALICE, { page: "conclusions", n: 2 }));
+		const rendered = await view.render(
+			ctxOf(ALICE, {
+				page: "conclusions",
+				n: 1,
+				level: "deductive",
+				text: "kimi",
+				session: "s1",
+				order: "oldest",
+			}),
+		);
 		const listCall = reader.callsOf("list").find(
 			(call) => (call.args[1] as { size: number }).size === 50,
 		);
-		expect(listCall?.args[1]).toMatchObject({ page: 2 });
+		expect(listCall?.args[1]).toMatchObject({ page: 1 });
+
+		// The Next button's navigate params carry n + 1 AND preserve the
+		// active filters (level/text/session/order) — dropping a filter on
+		// paging would silently change the result set.
+		const root = rendered.tree.root as {
+			main: readonly unknown[];
+		};
+		const paging = JSON.stringify(root.main).match(
+			/"id":"next","label":"Next","action":\{"type":"navigate","params":(\{[^}]*\})/,
+		);
+		expect(paging).not.toBeNull();
+		const nextParams = JSON.parse(paging![1]!) as Record<string, unknown>;
+		expect(nextParams).toMatchObject({
+			n: 2,
+			level: "deductive",
+			text: "kimi",
+			session: "s1",
+			order: "oldest",
+		});
+		// On page 1 of 2 there is no Previous.
+		expect(JSON.stringify(root.main)).not.toContain('"id":"previous"');
+
+		// pages === 1 → no paging block at all.
+		reader.listPage = conclusionPage([conclusionRow("c1")], 1, 1);
+		const single = await view.render(ctxOf(ALICE, { page: "conclusions" }));
+		const singleText = JSON.stringify(single.tree);
+		expect(singleText).not.toContain('"id":"paging"');
+		expect(singleText).not.toContain("Previous");
+		expect(singleText).not.toContain("Next");
 	});
 
 	test("a meaning query uses semantic search, no paging", async () => {
