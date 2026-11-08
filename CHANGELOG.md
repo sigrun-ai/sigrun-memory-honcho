@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Read-only Honcho view: peer card and filterable conclusions explorer,
+  plus conclusion detail with linked premises, used-by conclusions and
+  explicit-message citations. Selection history supports premise drill-in
+  and Back; missing sources and citation caps are reported inline.
+
 ### Changed
 
 - peer pi-durable/pi-ai/chord ~1.5.0 (requires sigrun 0.11.0).

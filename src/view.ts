@@ -21,7 +21,12 @@
  *   observer, order) and the results list — 50 per page, newest first
  *   (oldest sets `reverse`), with Previous/Next when `pages > 1`. A
  *   `meaning` filter switches to semantic search (`query`, top 50, no
- *   paging). The session list is read on THIS page only.
+ *   paging). The session list is read on THIS page only. With `selected`
+ *   set, main is the conclusion detail INSTEAD of the results list (never
+ *   the page `detail` slot, whose TUI activation would hide premise rows).
+ *   Premises and used-by rows keep drilling through `openConclusion`; the
+ *   compact back arrow and the Back action pop `trail`. Explicit citations
+ *   fetch at most 10 messages concurrently; bodies cap at 2,000 characters.
  *
  * Failure posture: EVERY fetch catches ALL errors — not just
  * `HonchoReadError`: the reader throws a raw SyntaxError when a 2xx
@@ -54,6 +59,7 @@ import type {
 	ConclusionPage,
 	ConclusionRow,
 	HonchoReader,
+	MessageRow,
 } from "./honcho-read.js";
 import { sanitize } from "./honcho.js";
 import {
@@ -72,6 +78,10 @@ const SESSION_PAGE_SIZE = 100;
 
 /** The per-fetch deadline (combined with the render's own abort signal). */
 const FETCH_TIMEOUT_MS = 15_000;
+
+/** The citation display bounds. */
+const CITATION_LIMIT = 10;
+const MESSAGE_BODY_LIMIT = 2_000;
 
 /** The not-configured callout body (verbatim — the test pins it). */
 const NOT_CONFIGURED =
@@ -434,6 +444,216 @@ export function createHonchoView(deps: HonchoViewDeps): SurfaceDef<"view"> {
 		};
 	}
 
+	/** The selected conclusion's data: the row, premises, used-by and citations. */
+	async function detailData(ctx: SurfaceContext, params: HonchoViewParams) {
+		const reader = deps.reader(await deps.settings(), await deps.apiKey());
+		const signal = fetchSignal(ctx);
+		const selected = await attempt(() => reader.byIds([params.selected], signal));
+		const conclusion = "value" in selected ? selected.value[0] : undefined;
+		if ("error" in selected || conclusion === undefined) return { selected, params };
+		const [premises, usedBy] = await Promise.all([
+			conclusion.sourceIds.length === 0
+				? Promise.resolve({ value: [] as readonly ConclusionRow[] } as FetchOutcome<readonly ConclusionRow[]>)
+				: attempt(() => reader.byIds(conclusion.sourceIds, signal)),
+			attempt(() => reader.list(
+				{ source_ids: [conclusion.id] },
+				{ page: 1, size: PAGE_SIZE, reverse: false, signal },
+			)),
+		]);
+		let citations: FetchOutcome<readonly (MessageRow | undefined)[]> | undefined;
+		if (conclusion.level === "explicit" && conclusion.sourceMessageIds !== null && conclusion.sourceMessageIds.length > 0 && conclusion.sessionId !== null) {
+			// Start all capped fetches before awaiting any one response.
+			citations = await attempt(() => Promise.all(
+				conclusion.sourceMessageIds!.slice(0, CITATION_LIMIT).map(
+					(messageId) => reader.message(conclusion.sessionId!, messageId, signal),
+				),
+			));
+		}
+		return { selected, params, conclusion, premises, usedBy, citations };
+	}
+
+	/** One linked conclusion list (premises or used-by). */
+	function conclusionCollection(id: string, rows: readonly ConclusionRow[]) {
+		return {
+			type: "collection" as const,
+			id,
+			display: "list" as const,
+			items: rows.map((row) => ({ id: row.id, content: row.content })),
+			item: { title: { $: "./content" } },
+			onActivate: { type: "edit" as const, name: "openConclusion" },
+		};
+	}
+
+	/** The selected conclusion's tree (the results collection is absent). */
+	function detailTree(data: Awaited<ReturnType<typeof detailData>>) {
+		const params = data.params;
+		const backParams = {
+			...params,
+			selected: params.trail.at(-1) ?? "",
+			trail: params.trail.slice(0, -1),
+		};
+		const conclusion = "conclusion" in data ? data.conclusion : undefined;
+		if ("error" in data.selected || conclusion === undefined) {
+			return {
+				v: 1 as const,
+				root: {
+					type: "page" as const,
+					id: "honcho-root",
+					title: "Honcho",
+					subtitle: "Conclusions",
+					actions: [
+						{ id: "back", label: "Back", action: { type: "submit" as const, name: "back" } },
+						...pageActions(),
+					],
+					selection: { selected: true, back: backParams },
+					...("error" in data.selected
+						? {}
+						: { empty: { icon: "info" as const, title: "Conclusion not found" } }),
+					main: [
+						"error" in data.selected
+							? errorCallout("detail-error", data.selected.error)
+							: {
+								type: "collection" as const,
+								id: "conclusion-detail-empty",
+								display: "list" as const,
+								items: [],
+								item: { title: { $: "./content" } },
+							},
+					],
+				},
+			};
+		}
+		const premises = data.premises!;
+		const usedBy = data.usedBy!;
+		const citations = data.citations;
+		const citationRows = citations !== undefined && "value" in citations
+			? citations.value
+			: [];
+		const missingCitations = citationRows.filter((message) => message === undefined).length;
+		return {
+			v: 1 as const,
+			root: {
+				type: "page" as const,
+				id: "honcho-root",
+				title: "Honcho",
+				subtitle: "Conclusions",
+				actions: [
+					{ id: "back", label: "Back", action: { type: "submit" as const, name: "back" } },
+					...pageActions(),
+				],
+				selection: { selected: true, back: backParams },
+				main: [
+					{
+						type: "section" as const,
+						id: "conclusion-detail",
+						title: "Conclusion",
+						children: [
+							{ type: "markdown" as const, id: "conclusion-content", text: conclusion.content },
+							{
+								type: "fields" as const,
+								id: "conclusion-fields",
+								rows: [
+									{ label: "Level", value: conclusion.level },
+									{ label: "Observer → observed", value: `${conclusion.observerId} → ${conclusion.observedId}` },
+									{ label: "Session", value: conclusion.sessionId ?? "None" },
+									{ label: "Created", value: conclusion.createdAt },
+									{ label: "Times derived", value: conclusion.timesDerived },
+									{ label: "ID", value: conclusion.id },
+								],
+							},
+						],
+					},
+					...(conclusion.sourceIds.length === 0
+						? []
+						: [{
+							type: "section" as const,
+							id: "premises-section",
+							title: conclusion.level === "deductive"
+								? "Premises"
+								: conclusion.level === "inductive"
+									? "Supporting observations"
+									: "Conflicting conclusions",
+							children: [
+								...("error" in premises
+									? [errorCallout("premises-error", premises.error)]
+									: [
+										conclusionCollection("premises", premises.value),
+										...(conclusion.sourceIds.length - premises.value.length > 0
+											? [{
+												type: "markdown" as const,
+												id: "premises-missing",
+												text: `${conclusion.sourceIds.length - premises.value.length} source conclusion${conclusion.sourceIds.length - premises.value.length === 1 ? " is" : "s are"} no longer available.`,
+											}]
+											: []),
+									]),
+							],
+						}]),
+					...("value" in usedBy && usedBy.value.items.length > 0
+						? [{
+							type: "section" as const,
+							id: "used-by-section",
+							title: "Used by",
+							children: [conclusionCollection("used-by", usedBy.value.items)],
+						}]
+						: "error" in usedBy
+							? [errorCallout("used-by-error", usedBy.error)]
+							: []),
+					...(conclusion.level !== "explicit" || conclusion.sourceMessageIds?.length === 0
+						? []
+						: [{
+							type: "section" as const,
+							id: "citations-section",
+							title: "Cited messages",
+							children: conclusion.sourceMessageIds === null
+								? [{
+									type: "markdown" as const,
+									id: "citations-not-recorded",
+									text: "Citations were not recorded for conclusions derived before 2026-11-07.",
+								}]
+								: conclusion.sessionId === null
+									? [{
+										type: "markdown" as const,
+										id: "citations-no-session",
+										text: "The cited messages can't be looked up (no session recorded).",
+									}]
+									: citations !== undefined && "error" in citations
+										? [errorCallout("citations-error", citations.error)]
+										: [
+											...citationRows.flatMap((message, index) => message === undefined
+												? []
+												: [{
+													type: "section" as const,
+													id: `citation-${message.id}`,
+													title: `${message.peerId} · ${message.createdAt}`,
+													children: [{
+														type: "markdown" as const,
+														id: `citation-body-${index}`,
+														text: message.content.length > MESSAGE_BODY_LIMIT
+															? `${message.content.slice(0, MESSAGE_BODY_LIMIT)}…`
+															: message.content,
+													}],
+												}]),
+											...(missingCitations > 0
+												? [{
+													type: "markdown" as const,
+													id: "citations-missing",
+													text: `${missingCitations} cited message${missingCitations === 1 ? " is" : "s are"} no longer available.`,
+												}]
+												: []),
+											...(conclusion.sourceMessageIds.length > CITATION_LIMIT
+												? [{
+													type: "markdown" as const,
+													id: "citations-capped",
+													text: `${conclusion.sourceMessageIds.length - CITATION_LIMIT} more cited messages not shown.`,
+												}]
+												: []),
+										],
+						}]),
+				],
+			},
+		};
+	}
+
 	/** The conclusions page's tree: filter form sidebar + results main. */
 	function conclusionsTree(data: Awaited<ReturnType<typeof conclusionsData>>) {
 		const params = data.params;
@@ -648,6 +868,10 @@ export function createHonchoView(deps: HonchoViewDeps): SurfaceDef<"view"> {
 			const settings = await deps.settings();
 			const params = parseViewParams(ctx.params);
 			if (params.page === "conclusions") {
+				if (params.selected !== "") {
+					const data = await detailData(ctx, params);
+					return { tree: detailTree(data), data: {}, access: "write" };
+				}
 				const data = await conclusionsData(ctx, who.peer, params);
 				return {
 					tree: conclusionsTree(data),

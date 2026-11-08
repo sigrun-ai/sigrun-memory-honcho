@@ -146,7 +146,7 @@ class FakeReader {
 		opts: { page: number; size: number; reverse: boolean; signal?: AbortSignal },
 	): Promise<ConclusionPage> {
 		this.record("list", [filters, opts]);
-		return this.listPage;
+		return this.listImpl?.(filters, opts) ?? this.listPage;
 	}
 
 	async query(
@@ -159,8 +159,18 @@ class FakeReader {
 		return this.queryRows;
 	}
 
-	async byIds(): Promise<readonly ConclusionRow[]> {
-		throw new Error("byIds is Task 4");
+	byIdRows: readonly ConclusionRow[] = [];
+	byIdsImpl?: (ids: readonly string[]) => readonly ConclusionRow[];
+	messages: Readonly<Record<string, { id: string; peerId: string; content: string; createdAt: string } | undefined>> = {};
+	messageOrder: string[] = [];
+	listImpl?: (
+		filters: Record<string, unknown>,
+		opts: { page: number; size: number; reverse: boolean; signal?: AbortSignal },
+	) => ConclusionPage;
+
+	async byIds(ids: readonly string[], signal?: AbortSignal): Promise<readonly ConclusionRow[]> {
+		this.record("byIds", [ids, signal]);
+		return this.byIdsImpl?.(ids) ?? this.byIdRows;
 	}
 
 	async sessions(
@@ -171,8 +181,14 @@ class FakeReader {
 		return { items: this.sessionItems, total: this.sessionItems.length };
 	}
 
-	async message(): Promise<never> {
-		throw new Error("message is Task 4");
+	async message(
+		sessionId: string,
+		messageId: string,
+		signal?: AbortSignal,
+	): Promise<{ id: string; peerId: string; content: string; createdAt: string } | undefined> {
+		this.record("message", [sessionId, messageId, signal]);
+		this.messageOrder = [...this.messageOrder, messageId];
+		return this.messages[messageId];
 	}
 
 	callsOf(method: string): { method: string; args: readonly unknown[] }[] {
@@ -673,5 +689,279 @@ describe("the Honcho view — failure and lifecycle states", () => {
 		expect(JSON.stringify(card)).not.toContain(FAKE_KEY);
 		const conclusions = await view.render(ctxOf(ALICE, { page: "conclusions" }));
 		expect(JSON.stringify(conclusions)).not.toContain(FAKE_KEY);
+	});
+});
+
+describe("the Honcho view — conclusion detail", () => {
+	function detailParams(selected = "c1") {
+		return { page: "conclusions", selected, trail: [] };
+	}
+
+	test("openConclusion pushes the current selection onto trail", async () => {
+		const reader = new FakeReader();
+		const view = viewOf(reader);
+		const opened = await view.actions!["openConclusion"]!(
+			ctxOf(ALICE, {
+				page: "conclusions",
+				selected: "c1",
+				trail: [],
+				level: "deductive",
+				text: "kimi",
+				n: 2,
+			}),
+			{ itemId: "c2" } as never,
+		);
+		expect(opened).toMatchObject({
+			ok: true,
+			navigate: {
+				type: "navigate",
+				params: {
+					page: "conclusions",
+					selected: "c2",
+					trail: ["c1"],
+					level: "deductive",
+					text: "kimi",
+					n: 2,
+				},
+			},
+		});
+		const popped = await view.actions!["back"]!(
+			ctxOf(ALICE, {
+				page: "conclusions",
+				selected: "c2",
+				trail: ["c1"],
+				level: "deductive",
+				text: "kimi",
+				n: 2,
+			}),
+			{} as never,
+		);
+		expect(popped).toMatchObject({
+			ok: true,
+			navigate: {
+				type: "navigate",
+				params: {
+					page: "conclusions",
+					selected: "c1",
+					trail: [],
+					level: "deductive",
+					text: "kimi",
+					n: 2,
+				},
+			},
+		});
+	});
+
+	test("detail shows fields", async () => {
+		const reader = new FakeReader();
+		reader.byIdRows = [conclusionRow("c1", {
+			content: "Alice likes loose-leaf tea",
+			level: "deductive",
+			observerId: "sigrun",
+			observedId: "alice",
+			sessionId: "s1",
+			createdAt: "2026-11-07T12:34:56Z",
+			timesDerived: 3,
+		})];
+		const view = viewOf(reader);
+		const rendered = await view.render(ctxOf(ALICE, detailParams()));
+		expectValidTree(rendered.tree, view);
+		expect(reader.callsOf("byIds")[0]?.args[0]).toEqual(["c1"]);
+		const text = JSON.stringify(rendered.tree);
+		for (const expected of [
+			"Alice likes loose-leaf tea",
+			"deductive",
+			"sigrun → alice",
+			"s1",
+			"2026-11-07T12:34:56Z",
+			"3",
+			"c1",
+			"Times derived",
+		]) expect(text).toContain(expected);
+		// The detail replaces main, not the page detail slot or results.
+		const root = rendered.tree.root as { detail?: unknown; selection?: unknown };
+		expect(root.detail).toBeUndefined();
+		expect(text).not.toContain('"id":"results"');
+		expect(root.selection).toEqual({
+			selected: true,
+			back: { ...parseViewParams(detailParams()), selected: "", trail: [] },
+		});
+	});
+
+	test("premises section is titled by level", async () => {
+		for (const [level, title] of [
+			["deductive", "Premises"],
+			["inductive", "Supporting observations"],
+			["contradiction", "Conflicting conclusions"],
+		] as const) {
+			const reader = new FakeReader();
+			reader.byIdRows = [
+				conclusionRow("c1", { level, sourceIds: ["p1", "p2"] }),
+				conclusionRow("p1"),
+				conclusionRow("p2"),
+			];
+			const view = viewOf(reader);
+			const rendered = await view.render(ctxOf(ALICE, detailParams()));
+			expectValidTree(rendered.tree, view);
+			const text = JSON.stringify(rendered.tree);
+			expect(text).toContain(`"title":"${title}"`);
+			expect(reader.callsOf("byIds").map((call) => call.args[0])).toEqual([
+				["c1"],
+				["p1", "p2"],
+			]);
+			const premises = text.match(/"id":"premises",[\s\S]*?"onActivate":\{"type":"edit","name":"openConclusion"\}/);
+			expect(premises).not.toBeNull();
+			expect(premises?.[0]).toContain('"id":"p1"');
+			expect(premises?.[0]).toContain('"id":"p2"');
+		}
+	});
+
+	test("missing premises are counted", async () => {
+		const reader = new FakeReader();
+		reader.byIdsImpl = (ids) => JSON.stringify(ids) === JSON.stringify(["c1"])
+			? [conclusionRow("c1", { level: "deductive", sourceIds: ["p1", "p2", "p3"] })]
+			: [conclusionRow("p1"), conclusionRow("p3")];
+		const view = viewOf(reader);
+		const rendered = await view.render(ctxOf(ALICE, detailParams()));
+		expectValidTree(rendered.tree, view);
+		const premisesCall = reader.callsOf("byIds").find(
+			(call) => JSON.stringify(call.args[0]) === JSON.stringify(["p1", "p2", "p3"]),
+		);
+		expect(premisesCall).toBeDefined();
+		// The source-id response omits p2; it is counted, not rendered as a row.
+		const text = JSON.stringify(rendered.tree);
+		expect(text).toContain("1 source conclusion is no longer available.");
+		expect(text).not.toContain('"id":"p2"');
+	});
+
+	test("used by lists conclusions derived from this one", async () => {
+		const reader = new FakeReader();
+		reader.byIdRows = [conclusionRow("c1")];
+		reader.listImpl = (filters) => JSON.stringify(filters) === JSON.stringify({ source_ids: ["c1"] })
+			? conclusionPage([conclusionRow("c2")])
+			: conclusionPage([]);
+		const view = viewOf(reader);
+		const rendered = await view.render(ctxOf(ALICE, detailParams()));
+		expectValidTree(rendered.tree, view);
+		const usedBy = reader.callsOf("list").find(
+			(call) => JSON.stringify(call.args[0]) === JSON.stringify({ source_ids: ["c1"] }),
+		);
+		expect(usedBy?.args[1]).toMatchObject({ page: 1, size: 50, reverse: false });
+		const text = JSON.stringify(rendered.tree);
+		expect(text).toContain('"title":"Used by"');
+		expect(text).toContain('"id":"c2"');
+		reader.listImpl = () => conclusionPage([]);
+		const empty = await view.render(ctxOf(ALICE, detailParams()));
+		expectValidTree(empty.tree, view);
+		expect(JSON.stringify(empty.tree)).not.toContain('"title":"Used by"');
+	});
+
+	test("explicit with citations shows the messages", async () => {
+		const reader = new FakeReader();
+		reader.byIdRows = [conclusionRow("c1", {
+			sourceMessageIds: ["m1", "m2"],
+			sessionId: "s1",
+		})];
+		reader.messages = {
+			m1: {
+				id: "m1",
+				peerId: "alice",
+				content: "first cited body",
+				createdAt: "2026-11-07T10:00:00Z",
+			},
+			m2: undefined,
+		};
+		const view = viewOf(reader);
+		const rendered = await view.render(ctxOf(ALICE, detailParams()));
+		expectValidTree(rendered.tree, view);
+		expect(reader.callsOf("message").map((call) => call.args.slice(0, 2))).toEqual([
+			["s1", "m1"],
+			["s1", "m2"],
+		]);
+		// Both fetches are started before either response resolves.
+		expect(reader.messageOrder).toEqual(["m1", "m2"]);
+		const text = JSON.stringify(rendered.tree);
+		expect(text).toContain("first cited body");
+		expect(text).toContain("1 cited message is no longer available.");
+	});
+
+	test("cited messages are capped at 10", async () => {
+		const reader = new FakeReader();
+		reader.byIdRows = [conclusionRow("c1", {
+			sourceMessageIds: Array.from({ length: 14 }, (_, index) => `m${index + 1}`),
+		})];
+		reader.messages = Object.fromEntries(
+			Array.from({ length: 14 }, (_, index) => [`m${index + 1}`, {
+				id: `m${index + 1}`,
+				peerId: "alice",
+				content: `body ${index + 1}`,
+				createdAt: "2026-11-07T10:00:00Z",
+			}]),
+		);
+		const view = viewOf(reader);
+		const rendered = await view.render(ctxOf(ALICE, detailParams()));
+		expectValidTree(rendered.tree, view);
+		expect(reader.callsOf("message")).toHaveLength(10);
+		expect(JSON.stringify(rendered.tree)).toContain("4 more cited messages not shown.");
+	});
+
+	test("cited message bodies cap at 2,000 characters", async () => {
+		const reader = new FakeReader();
+		reader.byIdRows = [conclusionRow("c1", { sourceMessageIds: ["m1"] })];
+		reader.messages = {
+			m1: {
+				id: "m1",
+				peerId: "alice",
+				content: "x".repeat(2_001),
+				createdAt: "2026-11-07T10:00:00Z",
+			},
+		};
+		const view = viewOf(reader);
+		const rendered = await view.render(ctxOf(ALICE, detailParams()));
+		expectValidTree(rendered.tree, view);
+		const text = JSON.stringify(rendered.tree);
+		expect(text).toContain(`${"x".repeat(2_000)}…`);
+		expect(text).not.toContain("x".repeat(2_001));
+	});
+
+	test("citations with no session", async () => {
+		const reader = new FakeReader();
+		reader.byIdRows = [conclusionRow("c1", {
+			sessionId: null,
+			sourceMessageIds: ["m1"],
+		})];
+		const view = viewOf(reader);
+		const rendered = await view.render(ctxOf(ALICE, detailParams()));
+		expectValidTree(rendered.tree, view);
+		expect(reader.callsOf("message")).toEqual([]);
+		expect(JSON.stringify(rendered.tree)).toContain(
+			"The cited messages can't be looked up (no session recorded).",
+		);
+	});
+
+	test("explicit without citations shows the not-recorded line", async () => {
+		const reader = new FakeReader();
+		reader.byIdRows = [conclusionRow("c1", { sourceMessageIds: null })];
+		const view = viewOf(reader);
+		const rendered = await view.render(ctxOf(ALICE, detailParams()));
+		expectValidTree(rendered.tree, view);
+		expect(JSON.stringify(rendered.tree)).toContain(
+			"Citations were not recorded for conclusions derived before 2026-11-07.",
+		);
+	});
+
+	test("selected id not found renders an empty detail with Back", async () => {
+		const reader = new FakeReader();
+		const view = viewOf(reader);
+		const rendered = await view.render(ctxOf(ALICE, detailParams("missing")));
+		expectValidTree(rendered.tree, view);
+		expect(reader.callsOf("byIds")[0]?.args[0]).toEqual(["missing"]);
+		const root = rendered.tree.root as {
+			empty?: { title: string };
+			actions?: readonly { id: string; label: string }[];
+		};
+		expect(root.empty?.title).toBe("Conclusion not found");
+		expect(root.actions?.some((action) => action.id === "back" && action.label === "Back")).toBe(true);
+		expect(JSON.stringify(rendered.tree)).toContain('"type":"submit","name":"back"');
 	});
 });
