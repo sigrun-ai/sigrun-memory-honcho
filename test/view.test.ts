@@ -203,12 +203,15 @@ class FakeReader {
 /** The view over a fake reader (deps seam; the host is unused by the view). */
 function viewOf(
 	reader: FakeReader,
-	opts: { apiKey?: string; workspaceId?: string } = {},
+	opts: { apiKey?: string; workspaceId?: string; onSettingsRead?: () => void } = {},
 ) {
 	return createHonchoView({
 		host: {} as never,
 		reader: () => reader as unknown as HonchoReader,
-		settings: async () => settings(opts.workspaceId === undefined ? {} : { workspaceId: opts.workspaceId }),
+		settings: async () => {
+			opts.onSettingsRead?.();
+			return settings(opts.workspaceId === undefined ? {} : { workspaceId: opts.workspaceId });
+		},
 		apiKey: async () => opts.apiKey === undefined ? FAKE_KEY : opts.apiKey,
 	});
 }
@@ -338,6 +341,7 @@ describe("the Honcho view — card page", () => {
 		// The newest row's createdAt renders as "Newest conclusion <relative>".
 		reader.listPage = conclusionPage([newest]);
 		const withNewest = await view.render(ctxOf(ALICE));
+		expectValidTree(withNewest.tree, view);
 		const text = JSON.stringify(withNewest.tree);
 		expect(text).toMatch(/Newest conclusion (just now|\d+[mhd] ago)/);
 
@@ -349,12 +353,42 @@ describe("the Honcho view — card page", () => {
 		const reader = new FakeReader();
 		const view = viewOf(reader);
 		const rendered = await view.render(ctxOf(ALICE));
+		expectValidTree(rendered.tree, view);
 		const text = JSON.stringify(rendered.tree);
 		for (const level of ["deductive", "inductive", "derived"]) {
 			expect(text).toContain(`"id":"${level}"`);
 			// The navigate params: {"page":"conclusions","level":"<x>"}.
 			expect(text).toContain(`"params":{"page":"conclusions","level":"${level}"}`);
 		}
+		expect(text).toContain('"id":"derived","label":"All derived"');
+	});
+
+	test("an empty card with failing stats keeps the error callouts visible", async () => {
+		const reader = new FakeReader();
+		reader.cardLines = [];
+		let lists = 0;
+		reader.listImpl = () => {
+			lists += 1;
+			throw new HonchoReadError(502, "stats unavailable");
+		};
+		const view = viewOf(reader);
+		const rendered = await view.render(ctxOf(ALICE));
+		expectValidTree(rendered.tree, view);
+		expect(lists).toBe(5);
+		const root = rendered.tree.root as { empty?: unknown };
+		// page.empty replaces main wholesale: a stats failure must never
+		// masquerade as an empty peer.
+		expect(root.empty).toBeUndefined();
+		expect(JSON.stringify(root)).toContain("stats unavailable");
+	});
+
+	test("each card render resolves settings once", async () => {
+		const reader = new FakeReader();
+		let settingsReads = 0;
+		const view = viewOf(reader, { onSettingsRead: () => { settingsReads += 1; } });
+		const rendered = await view.render(ctxOf(ALICE));
+		expectValidTree(rendered.tree, view);
+		expect(settingsReads).toBe(1);
 	});
 
 	test("a peer with no memory yet renders the empty state", async () => {
@@ -440,7 +474,8 @@ describe("the Honcho view — conclusions page", () => {
 	test("oldest first sets reverse", async () => {
 		const reader = new FakeReader();
 		const view = viewOf(reader);
-		await view.render(ctxOf(ALICE, { page: "conclusions", order: "oldest" }));
+		const rendered = await view.render(ctxOf(ALICE, { page: "conclusions", order: "oldest" }));
+		expectValidTree(rendered.tree, view);
 		const listCall = reader.callsOf("list").find(
 			(call) => (call.args[1] as { size: number }).size === 50,
 		);
@@ -461,6 +496,7 @@ describe("the Honcho view — conclusions page", () => {
 				order: "oldest",
 			}),
 		);
+		expectValidTree(rendered.tree, view);
 		const listCall = reader.callsOf("list").find(
 			(call) => (call.args[1] as { size: number }).size === 50,
 		);
@@ -490,6 +526,7 @@ describe("the Honcho view — conclusions page", () => {
 		// pages === 1 → no paging block at all.
 		reader.listPage = conclusionPage([conclusionRow("c1")], 1, 1);
 		const single = await view.render(ctxOf(ALICE, { page: "conclusions" }));
+		expectValidTree(single.tree, view);
 		const singleText = JSON.stringify(single.tree);
 		expect(singleText).not.toContain('"id":"paging"');
 		expect(singleText).not.toContain("Previous");
@@ -575,7 +612,8 @@ describe("the Honcho view — actions", () => {
 
 		// And the render path with the same malformed params sends NO
 		// created_at filter to Honcho (a bad value must never reach the wire).
-		await view.render(ctxOf(ALICE, { page: "conclusions", from: "yesterday" }));
+		const rendered = await view.render(ctxOf(ALICE, { page: "conclusions", from: "yesterday" }));
+		expectValidTree(rendered.tree, view);
 		const listCall = reader.callsOf("list").find(
 			(call) => (call.args[1] as { size: number }).size === 50,
 		);
@@ -675,7 +713,8 @@ describe("the Honcho view — failure and lifecycle states", () => {
 		// aborted when the reader observes it (AbortSignal.any of the ctx
 		// signal and the 15s timeout).
 		abort.abort();
-		await view.render(ctxOf(ALICE, {}, abort.signal));
+		const rendered = await view.render(ctxOf(ALICE, {}, abort.signal));
+		expectValidTree(rendered.tree, view);
 		expect(reader.calls.length).toBeGreaterThan(0);
 		for (const call of reader.calls) {
 			const signal = call.args.find((arg) => arg instanceof AbortSignal) ??
@@ -690,8 +729,10 @@ describe("the Honcho view — failure and lifecycle states", () => {
 		reader.listPage = conclusionPage([conclusionRow("c1")], 1, 1);
 		const view = viewOf(reader);
 		const card = await view.render(ctxOf(ALICE));
+		expectValidTree(card.tree, view);
 		expect(JSON.stringify(card)).not.toContain(FAKE_KEY);
 		const conclusions = await view.render(ctxOf(ALICE, { page: "conclusions" }));
+		expectValidTree(conclusions.tree, view);
 		expect(JSON.stringify(conclusions)).not.toContain(FAKE_KEY);
 	});
 });
@@ -782,6 +823,8 @@ describe("the Honcho view — conclusion detail", () => {
 			"c1",
 			"Times derived",
 		]) expect(text).toContain(expected);
+		// The id is copyable through the block set's copy action.
+		expect(text).toContain('"id":"copy-conclusion-id","label":"Copy ID","action":{"type":"copy","text":"c1"}');
 		// The detail replaces main, not the page detail slot or results.
 		const root = rendered.tree.root as { detail?: unknown; selection?: unknown };
 		expect(root.detail).toBeUndefined();
@@ -841,15 +884,17 @@ describe("the Honcho view — conclusion detail", () => {
 	test("used by lists conclusions derived from this one", async () => {
 		const reader = new FakeReader();
 		reader.byIdRows = [conclusionRow("c1")];
-		reader.listImpl = (filters) => JSON.stringify(filters) === JSON.stringify({ source_ids: ["c1"] })
+		const usedByFilters = { source_ids: ["c1"], observed_id: ALICE };
+		reader.listImpl = (filters) => JSON.stringify(filters) === JSON.stringify(usedByFilters)
 			? conclusionPage([conclusionRow("c2")])
 			: conclusionPage([]);
 		const view = viewOf(reader);
 		const rendered = await view.render(ctxOf(ALICE, detailParams()));
 		expectValidTree(rendered.tree, view);
 		const usedBy = reader.callsOf("list").find(
-			(call) => JSON.stringify(call.args[0]) === JSON.stringify({ source_ids: ["c1"] }),
+			(call) => JSON.stringify(call.args[0]) === JSON.stringify(usedByFilters),
 		);
+		expect(usedBy).toBeDefined();
 		expect(usedBy?.args[1]).toMatchObject({ page: 1, size: 50, reverse: false });
 		const text = JSON.stringify(rendered.tree);
 		expect(text).toContain('"title":"Used by"');
@@ -896,6 +941,24 @@ describe("the Honcho view — conclusion detail", () => {
 		const text = JSON.stringify(rendered.tree);
 		expect(text).toContain("first cited body");
 		expect(text).toContain("1 cited message is no longer available.");
+	});
+
+	test("duplicate citation ids fetch once and produce unique block ids", async () => {
+		const reader = new FakeReader();
+		reader.byIdRows = [conclusionRow("c1", { sourceMessageIds: ["m1", "m1"] })];
+		reader.messages = {
+			m1: {
+				id: "m1",
+				peerId: "alice",
+				content: "cited once",
+				createdAt: "2026-11-07T10:00:00Z",
+			},
+		};
+		const view = viewOf(reader);
+		const rendered = await view.render(ctxOf(ALICE, detailParams()));
+		expectValidTree(rendered.tree, view);
+		expect(reader.callsOf("message").map((call) => call.args[1])).toEqual(["m1"]);
+		expect(JSON.stringify(rendered.tree).match(/"id":"citation-m1"/g)).toHaveLength(1);
 	});
 
 	test("cited messages are capped at 10", async () => {
@@ -1017,9 +1080,14 @@ describe("the Honcho view — conclusion detail", () => {
 		const root = rendered.tree.root as {
 			empty?: { title: string };
 			actions?: readonly { id: string; label: string }[];
+			main: readonly { type: string; items?: unknown }[];
 		};
 		expect(root.empty?.title).toBe("Conclusion not found");
 		expect(root.actions?.some((action) => action.id === "back" && action.label === "Back")).toBe(true);
 		expect(JSON.stringify(rendered.tree)).toContain('"type":"submit","name":"back"');
+		// Webui isMainEmpty requires a bound empty collection, not a literal.
+		expect(root.main[0]?.type).toBe("collection");
+		expect(root.main[0]?.items).toEqual({ $: "/notFound" });
+		expect((rendered.data as { notFound?: unknown }).notFound).toEqual([]);
 	});
 });

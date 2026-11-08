@@ -231,7 +231,7 @@ export function createHonchoMemory(host, deps = {}) {
         host,
         reader: deps.createReader ??
             ((s, key) => createHonchoReader({
-                baseUrl: s.baseUrl ?? "https://api.honcho.dev",
+                baseUrl: s.baseUrl ?? process.env.HONCHO_URL ?? "https://api.honcho.dev",
                 workspaceId: s.workspaceId,
                 ...(key === undefined ? {} : { apiKey: key }),
             })),

@@ -180,7 +180,7 @@ function pageActions() {
 function levelShortcut(level) {
     return {
         id: level,
-        label: level[0].toUpperCase() + level.slice(1),
+        label: level === "derived" ? "All derived" : level[0].toUpperCase() + level.slice(1),
         action: {
             type: "navigate",
             params: { page: "conclusions", level },
@@ -213,8 +213,8 @@ export function createHonchoView(deps) {
     }
     /** The card page's data: card + four level counts + newest, each
      *  fetched independently so one failure renders one callout. */
-    async function cardData(ctx, peer, workspaceId) {
-        const reader = deps.reader(await deps.settings(), await deps.apiKey());
+    async function cardData(ctx, peer, settings, apiKey) {
+        const reader = deps.reader(settings, apiKey);
         const signal = fetchSignal(ctx);
         const [card, newest, ...counts] = await Promise.all([
             attempt(() => reader.card(peer, signal)),
@@ -231,7 +231,7 @@ export function createHonchoView(deps) {
             return [level, "value" in outcome ? (outcome.value.total ?? outcome.value.items.length) : 0];
         }));
         return {
-            workspaceId,
+            workspaceId: settings.workspaceId,
             card: "value" in card ? parseCard(card.value) : [],
             cardError: "error" in card ? card.error : undefined,
             counts: countValues,
@@ -244,8 +244,8 @@ export function createHonchoView(deps) {
     }
     /** The conclusions page's data: the results (list or semantic query)
      *  and the session picker options. */
-    async function conclusionsData(ctx, peer, params) {
-        const reader = deps.reader(await deps.settings(), await deps.apiKey());
+    async function conclusionsData(ctx, peer, params, settings, apiKey) {
+        const reader = deps.reader(settings, apiKey);
         const signal = fetchSignal(ctx);
         const filters = conclusionFilters(params, peer);
         const [results, sessions] = await Promise.all([
@@ -264,6 +264,8 @@ export function createHonchoView(deps) {
     /** The card page's tree. */
     function cardTree(data) {
         const empty = data.cardError === undefined &&
+            data.countErrors.length === 0 &&
+            data.newestError === undefined &&
             cardIsEmpty(data.card.flatMap((group) => group.lines), data.counts, data.newest);
         return {
             v: 1,
@@ -349,8 +351,8 @@ export function createHonchoView(deps) {
         };
     }
     /** The selected conclusion's data: the row, premises, used-by and citations. */
-    async function detailData(ctx, peer, params) {
-        const reader = deps.reader(await deps.settings(), await deps.apiKey());
+    async function detailData(ctx, peer, params, settings, apiKey) {
+        const reader = deps.reader(settings, apiKey);
         const signal = fetchSignal(ctx);
         const selected = await attempt(() => reader.byIds([params.selected], signal));
         const candidate = "value" in selected ? selected.value[0] : undefined;
@@ -361,12 +363,13 @@ export function createHonchoView(deps) {
             conclusion.sourceIds.length === 0
                 ? Promise.resolve({ value: [] })
                 : attempt(() => reader.byIds(conclusion.sourceIds, signal)),
-            attempt(() => reader.list({ source_ids: [conclusion.id] }, { page: 1, size: PAGE_SIZE, reverse: false, signal })),
+            attempt(() => reader.list({ source_ids: [conclusion.id], observed_id: peer }, { page: 1, size: PAGE_SIZE, reverse: false, signal })),
         ]);
         let citations;
         if (conclusion.level === "explicit" && conclusion.sourceMessageIds !== null && conclusion.sourceMessageIds.length > 0 && conclusion.sessionId !== null) {
             // Start all capped fetches before awaiting any one response.
-            citations = await attempt(() => Promise.all(conclusion.sourceMessageIds.slice(0, CITATION_LIMIT).map((messageId) => reader.message(conclusion.sessionId, messageId, signal))));
+            const messageIds = [...new Set(conclusion.sourceMessageIds)].slice(0, CITATION_LIMIT);
+            citations = await attempt(() => Promise.all(messageIds.map((messageId) => reader.message(conclusion.sessionId, messageId, signal))));
         }
         return { selected, params, conclusion, premises, usedBy, citations };
     }
@@ -422,7 +425,9 @@ export function createHonchoView(deps) {
                                 type: "collection",
                                 id: "conclusion-detail-empty",
                                 display: "list",
-                                items: [],
+                                // Webui isMainEmpty requires a binding to an empty
+                                // array; a literal works only on the TUI.
+                                items: { $: "/notFound" },
                                 item: { title: { $: "./content" } },
                             },
                     ],
@@ -473,6 +478,17 @@ export function createHonchoView(deps) {
                                     { label: "Times derived", value: conclusion.timesDerived },
                                     { label: "ID", value: conclusion.id },
                                 ],
+                            },
+                            {
+                                type: "callout",
+                                id: "conclusion-id-actions",
+                                tone: "neutral",
+                                title: "Conclusion ID",
+                                actions: [{
+                                        id: "copy-conclusion-id",
+                                        label: "Copy ID",
+                                        action: { type: "copy", text: conclusion.id },
+                                    }],
                             },
                         ],
                     },
@@ -772,10 +788,16 @@ export function createHonchoView(deps) {
             const params = parseViewParams(ctx.params);
             if (params.page === "conclusions") {
                 if (params.selected !== "") {
-                    const data = await detailData(ctx, who.peer, params);
-                    return { tree: detailTree(who.peer, data), data: {}, access: "write" };
+                    const data = await detailData(ctx, who.peer, params, settings, apiKey);
+                    return {
+                        tree: detailTree(who.peer, data),
+                        data: "error" in data.selected || !("conclusion" in data)
+                            ? { notFound: [] }
+                            : {},
+                        access: "write",
+                    };
                 }
-                const data = await conclusionsData(ctx, who.peer, params);
+                const data = await conclusionsData(ctx, who.peer, params, settings, apiKey);
                 return {
                     tree: conclusionsTree(data),
                     data: {
@@ -793,7 +815,7 @@ export function createHonchoView(deps) {
                     access: "write",
                 };
             }
-            const data = await cardData(ctx, who.peer, settings.workspaceId);
+            const data = await cardData(ctx, who.peer, settings, apiKey);
             return {
                 tree: cardTree(data),
                 // SAFETY: the data document is a JSON mirror (literal fields);

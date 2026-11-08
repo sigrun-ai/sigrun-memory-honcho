@@ -10,6 +10,7 @@ import type { DeliveryEngine } from "../src/delivery.js";
 import type { HonchoClient } from "../src/honcho.js";
 import type { HonchoSettings } from "../src/config.js";
 import type { RunSettledEventLike } from "../src/types.js";
+import * as honchoRead from "../src/honcho-read.js";
 import createHonchoMemory, { type FactoryDeps } from "../src/index.js";
 
 vi.mock("../src/representations.js", async (importOriginal) => {
@@ -166,6 +167,7 @@ describe("createHonchoMemory", () => {
 
 	afterEach(async () => {
 		vi.restoreAllMocks();
+		vi.unstubAllEnvs();
 		await harness?.cleanup();
 	});
 
@@ -221,6 +223,29 @@ describe("createHonchoMemory", () => {
 		expect(result.routes?.[0]?.path).toBe("status");
 		expect(result.routes?.[0]?.auth).toBe("user");
 		expect(typeof result.routes?.[0]?.handler).toBe("function");
+	});
+
+	it("the view falls back to HONCHO_URL when baseUrl is unset", async () => {
+		harness = await makeHarness({ apiKey: "sk-test" });
+		vi.stubEnv("HONCHO_URL", "https://env-honcho.example.invalid");
+		const createReader = vi.spyOn(honchoRead, "createHonchoReader");
+		const result = createHonchoMemory(harness.host as never, {
+			createEngine: harness.createEngine,
+		});
+		const view = result.surfaces?.views?.[0];
+		expect(view).toBeDefined();
+		await view!.render({
+			principal: { user: "alice", admin: false, service: false, method: "token" },
+			params: {},
+			key: "test",
+			signal: new AbortController().signal,
+		} as never);
+		expect(createReader).toHaveBeenCalledWith(expect.objectContaining({
+			baseUrl: "https://env-honcho.example.invalid",
+			workspaceId: "sigrun",
+			apiKey: "sk-test",
+		}));
+		createReader.mockRestore();
 	});
 
 	it("answered event appends one pending outbox record and kicks", async () => {

@@ -235,7 +235,7 @@ function pageActions() {
 function levelShortcut(level: "deductive" | "inductive" | "derived") {
 	return {
 		id: level,
-		label: level[0]!.toUpperCase() + level.slice(1),
+		label: level === "derived" ? "All derived" : level[0]!.toUpperCase() + level.slice(1),
 		action: {
 			type: "navigate" as const,
 			params: { page: "conclusions", level },
@@ -278,8 +278,13 @@ export function createHonchoView(deps: HonchoViewDeps): SurfaceDef<"view"> {
 
 	/** The card page's data: card + four level counts + newest, each
 	 *  fetched independently so one failure renders one callout. */
-	async function cardData(ctx: SurfaceContext, peer: string, workspaceId: string) {
-		const reader = deps.reader(await deps.settings(), await deps.apiKey());
+	async function cardData(
+		ctx: SurfaceContext,
+		peer: string,
+		settings: HonchoSettings,
+		apiKey: string,
+	) {
+		const reader = deps.reader(settings, apiKey);
 		const signal = fetchSignal(ctx);
 		const [card, newest, ...counts] = await Promise.all([
 			attempt(() => reader.card(peer, signal)),
@@ -304,7 +309,7 @@ export function createHonchoView(deps: HonchoViewDeps): SurfaceDef<"view"> {
 			}),
 		) as Record<CountLevel, number>;
 		return {
-			workspaceId,
+			workspaceId: settings.workspaceId,
 			card: "value" in card ? parseCard(card.value) : [],
 			cardError: "error" in card ? card.error : undefined,
 			counts: countValues,
@@ -324,8 +329,10 @@ export function createHonchoView(deps: HonchoViewDeps): SurfaceDef<"view"> {
 		ctx: SurfaceContext,
 		peer: string,
 		params: HonchoViewParams,
+		settings: HonchoSettings,
+		apiKey: string,
 	) {
-		const reader = deps.reader(await deps.settings(), await deps.apiKey());
+		const reader = deps.reader(settings, apiKey);
 		const signal = fetchSignal(ctx);
 		const filters = conclusionFilters(params, peer);
 		const [results, sessions] = await Promise.all([
@@ -350,6 +357,8 @@ export function createHonchoView(deps: HonchoViewDeps): SurfaceDef<"view"> {
 	function cardTree(data: Awaited<ReturnType<typeof cardData>>) {
 		const empty =
 			data.cardError === undefined &&
+			data.countErrors.length === 0 &&
+			data.newestError === undefined &&
 			cardIsEmpty(
 				data.card.flatMap((group) => group.lines),
 				data.counts,
@@ -445,8 +454,14 @@ export function createHonchoView(deps: HonchoViewDeps): SurfaceDef<"view"> {
 	}
 
 	/** The selected conclusion's data: the row, premises, used-by and citations. */
-	async function detailData(ctx: SurfaceContext, peer: string, params: HonchoViewParams) {
-		const reader = deps.reader(await deps.settings(), await deps.apiKey());
+	async function detailData(
+		ctx: SurfaceContext,
+		peer: string,
+		params: HonchoViewParams,
+		settings: HonchoSettings,
+		apiKey: string,
+	) {
+		const reader = deps.reader(settings, apiKey);
 		const signal = fetchSignal(ctx);
 		const selected = await attempt(() => reader.byIds([params.selected], signal));
 		const candidate = "value" in selected ? selected.value[0] : undefined;
@@ -457,15 +472,16 @@ export function createHonchoView(deps: HonchoViewDeps): SurfaceDef<"view"> {
 				? Promise.resolve({ value: [] as readonly ConclusionRow[] } as FetchOutcome<readonly ConclusionRow[]>)
 				: attempt(() => reader.byIds(conclusion.sourceIds, signal)),
 			attempt(() => reader.list(
-				{ source_ids: [conclusion.id] },
+				{ source_ids: [conclusion.id], observed_id: peer },
 				{ page: 1, size: PAGE_SIZE, reverse: false, signal },
 			)),
 		]);
 		let citations: FetchOutcome<readonly (MessageRow | undefined)[]> | undefined;
 		if (conclusion.level === "explicit" && conclusion.sourceMessageIds !== null && conclusion.sourceMessageIds.length > 0 && conclusion.sessionId !== null) {
 			// Start all capped fetches before awaiting any one response.
+			const messageIds = [...new Set(conclusion.sourceMessageIds)].slice(0, CITATION_LIMIT);
 			citations = await attempt(() => Promise.all(
-				conclusion.sourceMessageIds!.slice(0, CITATION_LIMIT).map(
+				messageIds.map(
 					(messageId) => reader.message(conclusion.sessionId!, messageId, signal),
 				),
 			));
@@ -527,7 +543,9 @@ export function createHonchoView(deps: HonchoViewDeps): SurfaceDef<"view"> {
 								type: "collection" as const,
 								id: "conclusion-detail-empty",
 								display: "list" as const,
-								items: [],
+								// Webui isMainEmpty requires a binding to an empty
+								// array; a literal works only on the TUI.
+								items: { $: "/notFound" },
 								item: { title: { $: "./content" } },
 							},
 					],
@@ -578,6 +596,17 @@ export function createHonchoView(deps: HonchoViewDeps): SurfaceDef<"view"> {
 									{ label: "Times derived", value: conclusion.timesDerived },
 									{ label: "ID", value: conclusion.id },
 								],
+							},
+							{
+								type: "callout" as const,
+								id: "conclusion-id-actions",
+								tone: "neutral" as const,
+								title: "Conclusion ID",
+								actions: [{
+									id: "copy-conclusion-id",
+									label: "Copy ID",
+									action: { type: "copy" as const, text: conclusion.id },
+								}],
 							},
 						],
 					},
@@ -883,10 +912,16 @@ export function createHonchoView(deps: HonchoViewDeps): SurfaceDef<"view"> {
 			const params = parseViewParams(ctx.params);
 			if (params.page === "conclusions") {
 				if (params.selected !== "") {
-					const data = await detailData(ctx, who.peer, params);
-					return { tree: detailTree(who.peer, data), data: {}, access: "write" };
+					const data = await detailData(ctx, who.peer, params, settings, apiKey);
+					return {
+						tree: detailTree(who.peer, data),
+						data: "error" in data.selected || !("conclusion" in data)
+							? { notFound: [] }
+							: {},
+						access: "write",
+					};
 				}
-				const data = await conclusionsData(ctx, who.peer, params);
+				const data = await conclusionsData(ctx, who.peer, params, settings, apiKey);
 				return {
 					tree: conclusionsTree(data),
 					data: {
@@ -904,7 +939,7 @@ export function createHonchoView(deps: HonchoViewDeps): SurfaceDef<"view"> {
 					access: "write",
 				};
 			}
-			const data = await cardData(ctx, who.peer, settings.workspaceId);
+			const data = await cardData(ctx, who.peer, settings, apiKey);
 			return {
 				tree: cardTree(data),
 				// SAFETY: the data document is a JSON mirror (literal fields);

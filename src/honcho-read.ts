@@ -118,7 +118,7 @@ export function createHonchoReader(opts: {
 	const timeoutMs = opts.timeoutMs ?? 15_000;
 	const workspace = `/v3/workspaces/${encodeURIComponent(opts.workspaceId)}`;
 
-	async function request(requestOpts: RequestOptions): Promise<{ response: Response; body: unknown }> {
+	async function request(requestOpts: RequestOptions): Promise<unknown> {
 		const url = `${baseUrl}${requestOpts.path}`;
 		const timeout = AbortSignal.timeout(timeoutMs);
 		const signal = requestOpts.signal === undefined
@@ -146,7 +146,7 @@ export function createHonchoReader(opts: {
 				`${requestOpts.method} ${requestOpts.path} → ${response.status}`,
 			);
 		}
-		return { response, body: await response.json() };
+		return response.json();
 	}
 
 	async function list(
@@ -158,7 +158,7 @@ export function createHonchoReader(opts: {
 			size: String(listOpts.size),
 			reverse: String(listOpts.reverse),
 		});
-		const { body } = await request({
+		const body = await request({
 			method: "POST",
 			path: `${workspace}/conclusions/list?${query}`,
 			body: { filters },
@@ -171,7 +171,7 @@ export function createHonchoReader(opts: {
 		async card(peer, signal) {
 			const path = `${workspace}/peers/${encodeURIComponent(peer)}/card`;
 			try {
-				const { body } = await request({ method: "GET", path, ...(signal === undefined ? {} : { signal }) });
+				const body = await request({ method: "GET", path, ...(signal === undefined ? {} : { signal }) });
 				return ((body as Record<string, unknown>).peer_card ?? []) as readonly string[];
 			} catch (error) {
 				if (error instanceof HonchoReadError && error.status === 404) return [];
@@ -182,7 +182,7 @@ export function createHonchoReader(opts: {
 		list,
 
 		async query(queryText, filters, topK, signal) {
-			const { body } = await request({
+			const body = await request({
 				method: "POST",
 				path: `${workspace}/conclusions/query`,
 				body: { query: queryText, top_k: topK, filters },
@@ -209,7 +209,7 @@ export function createHonchoReader(opts: {
 				size: String(sessionOpts.size),
 				reverse: "true",
 			});
-			const { body } = await request({
+			const body = await request({
 				method: "POST",
 				path: `${workspace}/peers/${encodeURIComponent(peer)}/sessions?${query}`,
 				body: {},
@@ -228,7 +228,7 @@ export function createHonchoReader(opts: {
 		async message(sessionId, messageId, signal) {
 			const path = `${workspace}/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}`;
 			try {
-				const { body } = await request({ method: "GET", path, ...(signal === undefined ? {} : { signal }) });
+				const body = await request({ method: "GET", path, ...(signal === undefined ? {} : { signal }) });
 				const row = body as Record<string, unknown>;
 				return {
 					id: row.id as string,
