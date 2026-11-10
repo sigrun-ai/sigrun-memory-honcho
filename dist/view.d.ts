@@ -46,7 +46,7 @@
  * view's data or tree.
  */
 import type { SigrunHost, SurfaceDef } from "@sigrun/sigrun/extension";
-import type { HonchoSettings } from "./config.js";
+import type { HonchoSettings } from "./settings-schema.js";
 import type { HonchoReader } from "./honcho-read.js";
 /** One grouped run of peer-card lines. */
 export interface CardGroup {

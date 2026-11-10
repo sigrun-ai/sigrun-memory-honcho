@@ -23,7 +23,7 @@
  * `*Sync` reads use `readFileSync` because the prompt-section render is
  * synchronous (the spec'd cache-read posture).
  */
-import type { HonchoSettings } from "./config.js";
+import type { HonchoSettings } from "./settings-schema.js";
 import type { LastDeliveryMarker, Ledger, OutboxRecord, PendingForkRecord, RepresentationSnapshot } from "./types.js";
 /** The three store roots, exactly `host.stores.paths`' shape. */
 export interface StorePaths {

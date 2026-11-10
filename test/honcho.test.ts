@@ -7,7 +7,7 @@ import {
 	sanitize,
 	type HonchoSdk,
 } from "../src/honcho.js";
-import type { HonchoSettings } from "../src/config.js";
+import type { HonchoSettings } from "../src/settings-schema.js";
 
 const SETTINGS: HonchoSettings = {
 	agentPeerId: "test-agent",

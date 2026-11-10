@@ -29,7 +29,7 @@ import { readFileSync } from "node:fs";
 import { mkdir, open, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
-import type { HonchoSettings } from "./config.js";
+import type { HonchoSettings } from "./settings-schema.js";
 import type {
 	LastDeliveryMarker,
 	Ledger,

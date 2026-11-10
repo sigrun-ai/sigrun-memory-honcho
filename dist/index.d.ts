@@ -24,7 +24,7 @@
  * worker re-refreshes from the ledger's owner.
  */
 import type { SigrunExtensionResult, SigrunHost } from "@sigrun/sigrun/extension";
-import { type HonchoSettings } from "./config.js";
+import { type HonchoSettings } from "./settings-schema.js";
 import { DeliveryEngine, type DeliveryHooks } from "./delivery.js";
 import { HonchoClient } from "./honcho.js";
 import type { HonchoReader } from "./honcho-read.js";

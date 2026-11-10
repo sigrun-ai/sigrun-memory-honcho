@@ -38,7 +38,7 @@
  * so `phases.sweep` ends in the terminal-completed commit and `abort`
  * commits terminal-failed.
  */
-import type { HonchoSettings } from "./config.js";
+import type { HonchoSettings } from "./settings-schema.js";
 import type { DeliveryEngine } from "./delivery.js";
 import type { ExtensionStores } from "./stores.js";
 /** The registered task kind; the cron job's action names it. */

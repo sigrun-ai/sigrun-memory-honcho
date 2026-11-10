@@ -9,10 +9,12 @@ import type {
 } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
 import type { Conclusion, Message } from "@honcho-ai/sdk";
+import { checkStoredSettings } from "@sigrun/sigrun/settings-schema";
 
 import type { DeliveryEngine } from "../src/delivery.js";
 import type { HonchoClient } from "../src/honcho.js";
 import createHonchoMemory from "../src/index.js";
+import { HONCHO_SETTINGS_SCHEMA } from "../src/settings-schema.js";
 
 // -- canned literals (tests own their literals) ------------------------------
 
@@ -138,6 +140,12 @@ async function makeHarness(options?: {
 
 	const metaCalls: number[] = [];
 	const host = {
+		settings: {
+			declare: () => ({
+				get: async () =>
+					checkStoredSettings(HONCHO_SETTINGS_SCHEMA, options?.settings ?? {}).value,
+			}),
+		},
 		stores: {
 			secrets: { get: async () => "test-key" },
 			settings: { get: async () => options?.settings ?? {} },

@@ -43,7 +43,7 @@ import type {
 	HonchoReader,
 } from "../src/honcho-read.js";
 import { HonchoReadError } from "../src/honcho-read.js";
-import type { HonchoSettings } from "../src/config.js";
+import type { HonchoSettings } from "../src/settings-schema.js";
 import {
 	conclusionFilters,
 	levelCountFilters,

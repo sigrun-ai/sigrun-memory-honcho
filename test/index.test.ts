@@ -4,11 +4,13 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentState } from "@earendil-works/pi-durable";
+import type { SettingsDeclaration } from "@sigrun/sigrun/extension";
+import { checkStoredSettings } from "@sigrun/sigrun/settings-schema";
 
 import { refreshRepresentation } from "../src/representations.js";
 import type { DeliveryEngine } from "../src/delivery.js";
 import type { HonchoClient } from "../src/honcho.js";
-import type { HonchoSettings } from "../src/config.js";
+import type { HonchoSettings } from "../src/settings-schema.js";
 import type { RunSettledEventLike } from "../src/types.js";
 import * as honchoRead from "../src/honcho-read.js";
 import createHonchoMemory, { type FactoryDeps } from "../src/index.js";
@@ -24,6 +26,9 @@ vi.mock("../src/representations.js", async (importOriginal) => {
 // -- fake host --------------------------------------------------------------
 
 interface FakeHost {
+	readonly settings: {
+		declare(declaration: SettingsDeclaration): { get(): Promise<Record<string, unknown>> };
+	};
 	readonly stores: {
 		readonly secrets: { get(key: string): Promise<string | undefined> };
 		readonly settings: { get(): Promise<Record<string, unknown>> };
@@ -59,7 +64,11 @@ async function makeHarness(options?: {
 	};
 	const settings = options?.settings ?? {};
 	const apiKey = options?.apiKey;
+	const declare = (declaration: SettingsDeclaration) => ({
+		get: async () => checkStoredSettings(declaration.schema, settings).value,
+	});
 	const host: FakeHost = {
+		settings: { declare },
 		stores: {
 			secrets: { get: async () => apiKey },
 			settings: { get: async () => settings },
@@ -569,6 +578,11 @@ describe("createHonchoMemory", () => {
 		};
 		let apiKey: string | undefined = "sk-A";
 		const host = {
+			settings: {
+				declare: (declaration: SettingsDeclaration) => ({
+					get: async () => checkStoredSettings(declaration.schema, {}).value,
+				}),
+			},
 			stores: {
 				secrets: { get: async () => apiKey },
 				settings: { get: async () => ({}) },

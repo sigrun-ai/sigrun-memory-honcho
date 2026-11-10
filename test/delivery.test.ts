@@ -10,7 +10,9 @@ import type {
 	Session,
 } from "@honcho-ai/sdk";
 
-import type { HonchoSettings } from "../src/config.js";
+import { checkStoredSettings } from "@sigrun/sigrun/settings-schema";
+
+import { HONCHO_SETTINGS_SCHEMA, type HonchoSettings } from "../src/settings-schema.js";
 import { DeliveryEngine } from "../src/delivery.js";
 import { HonchoClient, type HonchoSdk } from "../src/honcho.js";
 import createHonchoMemory from "../src/index.js";
@@ -799,6 +801,11 @@ describe("end-to-end fork flow (real factory handlers)", () => {
 		const { paths, stores } = await makeStores();
 		const engineRef: { current?: DeliveryEngine } = {};
 		const host = {
+			settings: {
+				declare: () => ({
+					get: async () => checkStoredSettings(HONCHO_SETTINGS_SCHEMA, {}).value,
+				}),
+			},
 			stores: {
 				secrets: { get: async () => "sk-test" },
 				settings: { get: async () => ({}) },

@@ -34,13 +34,8 @@ import type {
 } from "@sigrun/sigrun/extension";
 
 import { buildCaptureBatch } from "./capture.js";
-import {
-	resolveApiKey,
-	resolveSettings,
-	type HonchoSettings,
-	type SecretsReader,
-	type SettingsReader,
-} from "./config.js";
+import { resolveApiKey, type SecretsReader } from "./secrets.js";
+import { HONCHO_SETTINGS_SCHEMA, type HonchoSettings } from "./settings-schema.js";
 import { DeliveryEngine, type DeliveryHooks } from "./delivery.js";
 import { HonchoClient } from "./honcho.js";
 import { createHonchoReader } from "./honcho-read.js";
@@ -164,7 +159,10 @@ export function createHonchoMemory(
 	host: SigrunHost,
 	deps: FactoryDeps = {},
 ): SigrunExtensionResultLike {
-	const settingsStore: SettingsReader = host.stores.settings;
+	const declaredSettings = host.settings.declare<HonchoSettings>({
+		schema: HONCHO_SETTINGS_SCHEMA,
+	});
+	const resolveSettings = declaredSettings.get;
 	const secretsStore: SecretsReader = host.stores.secrets;
 	const paths: StorePaths = host.stores.paths;
 	const warnMissingKeyOnce = createWarnMissingKeyOnce();
@@ -200,7 +198,7 @@ export function createHonchoMemory(
 	}
 
 	function stores(): Promise<ExtensionStores> {
-		storesPromise ??= resolveSettings(settingsStore).then((settings) => {
+		storesPromise ??= resolveSettings().then((settings) => {
 			resolvedStores = new ExtensionStores(paths, settings);
 			return resolvedStores;
 		});
@@ -221,7 +219,7 @@ export function createHonchoMemory(
 
 	async function engine(): Promise<DeliveryEngine> {
 		// Resolve FIRST, cache-compare second: a key/settings change rebuilds.
-		const settings = await resolveSettings(settingsStore);
+		const settings = await resolveSettings();
 		const apiKey = await resolveApiKey(secretsStore);
 		if (
 			enginePromise !== undefined &&
@@ -329,7 +327,7 @@ export function createHonchoMemory(
 					workspaceId: s.workspaceId,
 					...(key === undefined ? {} : { apiKey: key }),
 				})),
-		settings: () => resolveSettings(settingsStore),
+		settings: () => resolveSettings(),
 		apiKey: () => resolveApiKey(secretsStore),
 	});
 
@@ -348,14 +346,14 @@ export function createHonchoMemory(
 			],
 			tasks: [
 				// The outbox sweeper (fired by the outbox-sweep cron job below).
-				createSweepTask({ engine, stores, settings: () => resolveSettings(settingsStore) }),
+				createSweepTask({ engine, stores, settings: () => resolveSettings() }),
 			],
 		}),
 
 		workerStatus,
 
 		async runSettled(event, api, context) {
-			const settings = await resolveSettings(settingsStore);
+			const settings = await resolveSettings();
 			const owner = event.owner ?? "user";
 			const record = buildCaptureBatch(
 				event as RunSettledEventLike,
@@ -393,7 +391,7 @@ export function createHonchoMemory(
 		},
 
 		async harnessShutdown() {
-			const settings = await resolveSettings(settingsStore);
+			const settings = await resolveSettings();
 			const apiKey = await resolveApiKey(secretsStore);
 			await makeClient(settings, apiKey).drainAll(DRAIN_DEADLINE_MS);
 		},
@@ -491,7 +489,7 @@ export function createHonchoMemory(
 				// `workerStatus`. No key material crosses the body —
 				// buildStatus projects the key to the `configured` boolean.
 				handler: createStatusHandler({
-					settings: () => resolveSettings(settingsStore),
+					settings: () => resolveSettings(),
 					apiKey: () => resolveApiKey(secretsStore),
 					stores,
 					workerStatus,

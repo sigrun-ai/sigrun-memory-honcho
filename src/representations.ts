@@ -18,7 +18,7 @@
  * parts null renders nothing.
  */
 
-import type { HonchoSettings } from "./config.js";
+import type { HonchoSettings } from "./settings-schema.js";
 import type { HonchoClient } from "./honcho.js";
 import type { ExtensionStores } from "./stores.js";
 import type { RepresentationSnapshot } from "./types.js";

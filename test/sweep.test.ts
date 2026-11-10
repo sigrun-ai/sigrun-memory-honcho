@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Context } from "@earendil-works/chord";
 import type { AnyTask } from "@earendil-works/pi-durable";
 
-import type { HonchoSettings } from "../src/config.js";
+import type { HonchoSettings } from "../src/settings-schema.js";
 import type { DeliveryEngine } from "../src/delivery.js";
 import { createSweepTask, type SweepTaskDeps } from "../src/sweep.js";
 import { ExtensionStores, type StorePaths } from "../src/stores.js";

@@ -17,7 +17,7 @@
  *   count comes from fresh disk reads — never from cached state.
  */
 import type { ExtensionStores } from "./stores.js";
-import type { HonchoSettings } from "./config.js";
+import type { HonchoSettings } from "./settings-schema.js";
 import type { WorkerRunStatus } from "./types.js";
 /** Alias for the shared worker bookkeeping (the one declaration lives in types.ts). */
 export type { WorkerRunStatus as StatusWorkerRun } from "./types.js";

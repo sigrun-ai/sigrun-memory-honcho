@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-11-10
+
+### Changed
+
+- Declare the eleven settings as JSON Schema through `host.settings.declare`
+  (requires sigrun 0.13.0 or newer), so the settings page is a generated form
+  and the hand-written `src/config.ts` parser is gone. Defaults and the
+  malformed-value fallback (a bad value reads as its default) now come from
+  core's checked read; titles and descriptions travel with the schema. The
+  API key stays in the secrets store (`api-key`) with its environment
+  fallback — it is never a settings value.
+
 ## [0.1.6] - 2026-11-08
 
 - CI: test against the latest released core (core-ref: release). No code change.

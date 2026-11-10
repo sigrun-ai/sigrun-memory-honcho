@@ -66,8 +66,12 @@ check(typeof manifest.homepage === "string", "package.json: homepage absent");
  * (peers accept ~1.5.0; devDeps pin 1.5.0 exactly), keeping one
  * type-compatible copy of chord/pi-ai/pi-durable.
  * typebox is pi-ai's own exact dependency (1.3.27) — the
- * host-linked single copy extensions see. */
+ * host-linked single copy extensions see.
+ * @sigrun/sigrun is the host itself: the settings rework made the declared
+ * settings contract (host.settings.declare) part of the minimum, so the
+ * peer floor names that release while devDeps link core's workspace. */
 const HOST_MODULE_PINS = {
+	"@sigrun/sigrun": ">=0.13.0",
 	"@earendil-works/pi-durable": "~1.5.0",
 	"@earendil-works/pi-ai": "~1.5.0",
 	"@earendil-works/chord": "~1.5.0",
@@ -83,7 +87,16 @@ const DEV_PIN_OVERRIDES = {
 };
 const peers = manifest.peerDependencies ?? {};
 const devDeps = manifest.devDependencies ?? {};
+check(
+	peers["@sigrun/sigrun"] === HOST_MODULE_PINS["@sigrun/sigrun"],
+	`package.json: peerDependencies["@sigrun/sigrun"] must be "${HOST_MODULE_PINS["@sigrun/sigrun"]}"`,
+);
+check(
+	devDeps["@sigrun/sigrun"] === "file:../sigrun",
+	'package.json: devDependencies["@sigrun/sigrun"] must be "file:../sigrun"',
+);
 for (const [module, spec] of Object.entries(peers)) {
+	if (module === "@sigrun/sigrun") continue;
 	check(
 		module in HOST_MODULE_PINS,
 		`package.json: peerDependencies carries non-host module "${module}"`,
