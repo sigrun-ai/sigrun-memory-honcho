@@ -41,7 +41,7 @@
 
 import { defineTask } from "@earendil-works/pi-durable";
 
-import type { HonchoSettings } from "./config.js";
+import type { HonchoSettings } from "./settings-schema.js";
 import type { DeliveryEngine } from "./delivery.js";
 import type { ExtensionStores } from "./stores.js";
 import type { OutboxRecord } from "./types.js";

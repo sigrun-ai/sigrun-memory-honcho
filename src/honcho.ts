@@ -10,7 +10,7 @@
 import { Honcho, type Peer, type Session } from "@honcho-ai/sdk";
 
 import { chain, chainTails } from "./chains.js";
-import type { HonchoSettings } from "./config.js";
+import type { HonchoSettings } from "./settings-schema.js";
 
 /**
  * Structural slice of the SDK the client uses — fakes in tests implement

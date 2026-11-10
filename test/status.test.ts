@@ -5,12 +5,11 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { SigrunHost } from "@sigrun/sigrun/extension";
+import { checkStoredSettings } from "@sigrun/sigrun/settings-schema";
+import { HONCHO_SETTINGS_SCHEMA } from "../src/settings-schema.js";
 
-import {
-	resolveApiKey,
-	resolveSettings,
-	type HonchoSettings,
-} from "../src/config.js";
+import { resolveApiKey } from "../src/secrets.js";
+import type { HonchoSettings } from "../src/settings-schema.js";
 import createHonchoMemory from "../src/index.js";
 import {
 	buildStatus,
@@ -112,7 +111,7 @@ function makeDeps(
 	const settings = options?.settings ?? {};
 	const apiKey = options?.apiKey;
 	return {
-		settings: () => resolveSettings({ get: async () => settings }),
+		settings: async () => checkStoredSettings(HONCHO_SETTINGS_SCHEMA, settings).value as HonchoSettings,
 		apiKey: () => resolveApiKey({ get: async () => apiKey }),
 		stores: async () => stores,
 		workerStatus:
@@ -341,15 +340,16 @@ describe("status route (factory)", () => {
 	it("the GET status route serves the built status without key material", async () => {
 		vi.stubEnv(API_KEY_ENV, "");
 		const { dir, data, state, cache } = await makeStores();
+		const storedSettings = { workspaceId: "ws-wired", agentPeerId: "peer-wired" };
 		const host = {
+			settings: {
+				declare: () => ({
+					get: async () => checkStoredSettings(HONCHO_SETTINGS_SCHEMA, storedSettings).value,
+				}),
+			},
 			stores: {
 				secrets: { get: async () => "sk-wired-key-material" },
-				settings: {
-					get: async () => ({
-						workspaceId: "ws-wired",
-						agentPeerId: "peer-wired",
-					}),
-				},
+				settings: { get: async () => storedSettings },
 				paths: { data, state, cache },
 			},
 		} as unknown as SigrunHost;

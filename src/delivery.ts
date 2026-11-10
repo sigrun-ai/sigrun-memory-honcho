@@ -28,7 +28,7 @@
 
 import type { MessageInput, Peer, Session } from "@honcho-ai/sdk";
 
-import type { HonchoSettings } from "./config.js";
+import type { HonchoSettings } from "./settings-schema.js";
 import { pickCloneAnchor } from "./fork-rules.js";
 import type { HonchoClient } from "./honcho.js";
 import type { ExtensionStores } from "./stores.js";

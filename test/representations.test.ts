@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Peer, Session } from "@honcho-ai/sdk";
 
-import type { HonchoSettings } from "../src/config.js";
+import type { HonchoSettings } from "../src/settings-schema.js";
 import { HonchoClient, type HonchoSdk } from "../src/honcho.js";
 import {
 	refreshRepresentation,

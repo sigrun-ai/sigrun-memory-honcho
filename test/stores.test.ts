@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { HonchoSettings } from "../src/config.js";
+import type { HonchoSettings } from "../src/settings-schema.js";
 import { ExtensionStores } from "../src/stores.js";
 import type { Ledger, OutboxRecord, PendingForkRecord } from "../src/types.js";
 

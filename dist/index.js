@@ -25,7 +25,8 @@
  */
 import { AgentDoc, defineExtension, section } from "@earendil-works/pi-durable";
 import { buildCaptureBatch } from "./capture.js";
-import { resolveApiKey, resolveSettings, } from "./config.js";
+import { resolveApiKey } from "./secrets.js";
+import { HONCHO_SETTINGS_SCHEMA } from "./settings-schema.js";
 import { DeliveryEngine } from "./delivery.js";
 import { HonchoClient } from "./honcho.js";
 import { createHonchoReader } from "./honcho-read.js";
@@ -100,7 +101,10 @@ export function makeLeadingEdgeHook(opts) {
     };
 }
 export function createHonchoMemory(host, deps = {}) {
-    const settingsStore = host.stores.settings;
+    const declaredSettings = host.settings.declare({
+        schema: HONCHO_SETTINGS_SCHEMA,
+    });
+    const resolveSettings = declaredSettings.get;
     const secretsStore = host.stores.secrets;
     const paths = host.stores.paths;
     const warnMissingKeyOnce = createWarnMissingKeyOnce();
@@ -127,7 +131,7 @@ export function createHonchoMemory(host, deps = {}) {
         return (deps.createClient ?? ((s, key) => new HonchoClient(s, key)))(settings, apiKey);
     }
     function stores() {
-        storesPromise ??= resolveSettings(settingsStore).then((settings) => {
+        storesPromise ??= resolveSettings().then((settings) => {
             resolvedStores = new ExtensionStores(paths, settings);
             return resolvedStores;
         });
@@ -147,7 +151,7 @@ export function createHonchoMemory(host, deps = {}) {
     }
     async function engine() {
         // Resolve FIRST, cache-compare second: a key/settings change rebuilds.
-        const settings = await resolveSettings(settingsStore);
+        const settings = await resolveSettings();
         const apiKey = await resolveApiKey(secretsStore);
         if (enginePromise !== undefined &&
             apiKey === engineKey &&
@@ -235,7 +239,7 @@ export function createHonchoMemory(host, deps = {}) {
                 workspaceId: s.workspaceId,
                 ...(key === undefined ? {} : { apiKey: key }),
             })),
-        settings: () => resolveSettings(settingsStore),
+        settings: () => resolveSettings(),
         apiKey: () => resolveApiKey(secretsStore),
     });
     return {
@@ -249,12 +253,12 @@ export function createHonchoMemory(host, deps = {}) {
             ],
             tasks: [
                 // The outbox sweeper (fired by the outbox-sweep cron job below).
-                createSweepTask({ engine, stores, settings: () => resolveSettings(settingsStore) }),
+                createSweepTask({ engine, stores, settings: () => resolveSettings() }),
             ],
         }),
         workerStatus,
         async runSettled(event, api, context) {
-            const settings = await resolveSettings(settingsStore);
+            const settings = await resolveSettings();
             const owner = event.owner ?? "user";
             const record = buildCaptureBatch(event, owner, settings.maxMessageLength);
             if (record === undefined)
@@ -285,7 +289,7 @@ export function createHonchoMemory(host, deps = {}) {
             });
         },
         async harnessShutdown() {
-            const settings = await resolveSettings(settingsStore);
+            const settings = await resolveSettings();
             const apiKey = await resolveApiKey(secretsStore);
             await makeClient(settings, apiKey).drainAll(DRAIN_DEADLINE_MS);
         },
@@ -370,7 +374,7 @@ export function createHonchoMemory(host, deps = {}) {
                 // `workerStatus`. No key material crosses the body —
                 // buildStatus projects the key to the `configured` boolean.
                 handler: createStatusHandler({
-                    settings: () => resolveSettings(settingsStore),
+                    settings: () => resolveSettings(),
                     apiKey: () => resolveApiKey(secretsStore),
                     stores,
                     workerStatus,

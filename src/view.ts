@@ -54,7 +54,7 @@ import type {
 	SurfaceRenderResult,
 } from "@sigrun/sigrun/extension";
 
-import type { HonchoSettings } from "./config.js";
+import type { HonchoSettings } from "./settings-schema.js";
 import type {
 	ConclusionPage,
 	ConclusionRow,

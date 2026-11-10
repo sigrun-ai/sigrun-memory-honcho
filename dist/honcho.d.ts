@@ -7,7 +7,7 @@
  * and the shutdown drain over every conversation's serialization chain.
  */
 import { type Peer, type Session } from "@honcho-ai/sdk";
-import type { HonchoSettings } from "./config.js";
+import type { HonchoSettings } from "./settings-schema.js";
 /**
  * Structural slice of the SDK the client uses — fakes in tests implement
  * this instead of the real network client.
