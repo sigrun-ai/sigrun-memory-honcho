@@ -71,7 +71,7 @@ check(typeof manifest.homepage === "string", "package.json: homepage absent");
  * settings contract (host.settings.declare) part of the minimum, so the
  * peer floor names that release while devDeps link core's workspace. */
 const HOST_MODULE_PINS = {
-	"@sigrun/sigrun": ">=0.13.0",
+	"@sigrun/sigrun": ">=0.15.0",
 	"@earendil-works/pi-durable": "~1.5.0",
 	"@earendil-works/pi-ai": "~1.5.0",
 	"@earendil-works/chord": "~1.5.0",

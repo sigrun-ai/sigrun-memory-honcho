@@ -8,7 +8,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { assertDrawable, checkStoredSettings } from "@sigrun/sigrun/settings-schema";
 import type { SettingsDeclaration, SigrunHost } from "@sigrun/sigrun/extension";
 
@@ -23,6 +23,8 @@ interface DeclaredHost {
 
 const dirs: string[] = [];
 afterEach(async () => {
+	vi.unstubAllGlobals();
+	vi.unstubAllEnvs();
 	await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -78,6 +80,42 @@ const DEFAULTS = {
 describe("memory-honcho settings schema", () => {
 	test("schema is drawable", () => {
 		assertDrawable(HONCHO_SETTINGS_SCHEMA);
+	});
+
+	test("baseUrl declares its env fallback", () => {
+		const baseUrl = HONCHO_SETTINGS_SCHEMA.properties.baseUrl as unknown as Record<string, unknown>;
+		expect(baseUrl["x-sigrun-env"]).toBe("HONCHO_URL");
+	});
+
+	test("factory declares its title", async () => {
+		const root = await mkdtemp(join(tmpdir(), "memory-honcho-title-"));
+		dirs.push(root);
+		const host = {
+			settings: { declare: () => ({ get: async () => ({}) }) },
+			stores: {
+				secrets: { get: async () => undefined },
+				paths: { data: join(root, "data"), state: join(root, "state"), cache: join(root, "cache") },
+			},
+		} as unknown as SigrunHost;
+		expect(createHonchoMemory(host).title).toBe("Honcho");
+	});
+
+	test("env fallback still reaches the provider", async () => {
+		const { HonchoClient } = await import("../src/honcho.js");
+		const envUrl = "https://env-honcho.example.invalid";
+		vi.stubEnv("HONCHO_URL", envUrl);
+		const requests: string[] = [];
+		vi.stubGlobal("fetch", async (input: string | URL | Request) => {
+			requests.push(String(input));
+			return new Response("{}", {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		});
+		const client = new HonchoClient({ ...DEFAULTS, workspaceId: "test-workspace" }, "synthetic-key");
+		await client.agentPeer();
+		expect(requests.length).toBeGreaterThan(0);
+		for (const request of requests) expect(request.startsWith(envUrl)).toBe(true);
 	});
 
 	test("defaults match the old parser", async () => {

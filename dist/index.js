@@ -243,6 +243,7 @@ export function createHonchoMemory(host, deps = {}) {
         apiKey: () => resolveApiKey(secretsStore),
     });
     return {
+        title: "Honcho",
         extension: defineExtension({
             name: EXTENSION_NAME,
             tools,
