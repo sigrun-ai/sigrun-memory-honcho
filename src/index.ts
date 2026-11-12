@@ -332,6 +332,8 @@ export function createHonchoMemory(
 	});
 
 	return {
+		title: "Honcho",
+
 		extension: defineExtension({
 			name: EXTENSION_NAME,
 			tools,

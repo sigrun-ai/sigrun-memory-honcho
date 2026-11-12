@@ -29,6 +29,7 @@ export const HONCHO_SETTINGS_SCHEMA = asJsonSchema(Type.Object({
         minLength: 1,
         description: "Custom Honcho endpoint; absent uses HONCHO_URL or the public Honcho API.",
         "x-sigrun-apply": "live",
+        "x-sigrun-env": "HONCHO_URL",
     })),
     workspaceId: Type.String({
         title: "Workspace ID",
