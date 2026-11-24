@@ -7,7 +7,7 @@ import type {
 	ToolExecutionApi,
 	ToolRegistration,
 } from "@earendil-works/pi-durable";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { Conclusion, Message } from "@honcho-ai/sdk";
 import { checkStoredSettings } from "@sigrun/sigrun/settings-schema";
 
