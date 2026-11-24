@@ -36,10 +36,7 @@ jobs:
     secrets: inherit
     with:
       needs-core: true
-      # C1 train-time flip: test against core main, which carries the
-      # pi-durable 1.6.0 this lane needs. Flip back to release once
-      # core 0.22.0 is live on the registry.
-      core-ref: main
+      core-ref: release
       tag: ${{ inputs.tag || '' }}
       dry-run: ${{ inputs.dry-run || false }}
       dry-run-ref: ${{ inputs.ref || '' }}
