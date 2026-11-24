@@ -3,7 +3,7 @@
 # file's name (release.yml) in THIS repo — that is the OIDC trust
 # configuration, so the name must not change. permissions id-token:
 # write is the OIDC grant; no NPM_TOKEN exists anywhere.
-# core-ref: release tests against the latest released core.
+# core-ref: main during a joint train (C1): the lane needs the unreleased.
 name: release
 
 on:
@@ -36,7 +36,10 @@ jobs:
     secrets: inherit
     with:
       needs-core: true
-      core-ref: release
+      # C1 train-time flip: test against core main, which carries the
+      # pi-durable 1.6.0 this lane needs. Flip back to release once
+      # core 0.22.0 is live on the registry.
+      core-ref: main
       tag: ${{ inputs.tag || '' }}
       dry-run: ${{ inputs.dry-run || false }}
       dry-run-ref: ${{ inputs.ref || '' }}
